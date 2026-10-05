@@ -9,6 +9,10 @@ output:
   key: [url]         # latest status per file URL
   export: all        # manifest covers every file seen, not just the last run
 
+validation:
+  min_rows: 1
+  required_fields: [url, status]
+
 retry:
   retries: 3
   retry_delay: 120        # 2 minutes between retries

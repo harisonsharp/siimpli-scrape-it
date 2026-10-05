@@ -29,6 +29,15 @@ class RateLimitConfig(BaseModel):
     # Skip pages disallowed by the site's robots.txt (checked per navigation / request)
     respect_robots: bool = False
 
+class ValidationConfig(BaseModel):
+    """Expectations a scraper's rows must meet; a violation fails the run
+    before anything is stored or exported."""
+    min_rows: Optional[int] = Field(default=None, ge=0)
+    # Fields every row must have, non-null and non-blank
+    required_fields: List[str] = Field(default_factory=list)
+    # Expected JSON type per field, checked where the value is present and non-null
+    types: Dict[str, Literal["string", "number", "integer", "boolean"]] = Field(default_factory=dict)
+
 class NotifyConfig(BaseModel):
     """Webhook notification settings (JSON POST)."""
     webhook_url: str
@@ -44,6 +53,7 @@ class JobConfig(BaseModel):
     retry: RetryConfig = Field(default_factory=RetryConfig)
     rate_limit: Optional[RateLimitConfig] = None
     notify: Optional[NotifyConfig] = None
+    validation: Optional[ValidationConfig] = None
     # Run the script in a child process that is killed after this many seconds
     # (None = no limit). Applies per attempt; only enforced when isolate is true.
     timeout_seconds: Optional[int] = Field(default=3600, gt=0)

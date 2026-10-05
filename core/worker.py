@@ -15,11 +15,13 @@ import sys
 import traceback
 from pathlib import Path
 
+from core.logger import configure_logging
 from schemas.job_schema import JobConfig
 from utils.ratelimit import activate
 
 
 def main(argv: list) -> int:
+    configure_logging()  # level inherited from the parent via SIIMPLI_LOG_LEVEL
     config_path, result_path = argv
     config = JobConfig.model_validate_json(Path(config_path).read_text(encoding="utf-8"))
 

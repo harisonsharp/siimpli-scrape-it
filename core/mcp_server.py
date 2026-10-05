@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.config import load_all_jobs
+from core.logger import configure_logging
 from core.runner import execute_job
 from schemas.job_schema import JobConfig
 from utils import db
@@ -59,6 +60,7 @@ class JobService:
                 "output": job.output.model_dump(),
                 "timeout_seconds": job.timeout_seconds,
                 "rate_limit": job.rate_limit.model_dump() if job.rate_limit else None,
+                "validation": job.validation.model_dump() if job.validation else None,
                 "last_run": ({k: last[0][k] for k in ("id", "status", "started_at", "item_count", "error")}
                              if last else None),
             })
@@ -152,7 +154,7 @@ def create_server(service: Optional[JobService] = None):
 
 def serve(project_dir: Optional[str] = None, jobs_dir: str = "jobs") -> None:
     """Run the MCP server over stdio until the client disconnects."""
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+    configure_logging(stream=sys.stderr)
     if project_dir:
         os.chdir(project_dir)  # jobs/ and output paths are relative to the project
 

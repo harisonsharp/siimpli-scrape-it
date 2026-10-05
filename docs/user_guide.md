@@ -358,6 +358,20 @@ notify:
   on_empty: true     # default
 ```
 
+### Output validation
+
+A scraper that "succeeds" but returns junk (a site changed, a selector matches nothing, prices turned into strings) should fail loudly, not overwrite your last good data. Add a `validation` block:
+
+```yaml
+validation:
+  min_rows: 1                 # fail if fewer rows than this (also turns "0 rows" from a warning into a failure)
+  required_fields: [date]     # every row needs these, non-null and non-blank
+  types:                      # expected type where the field is present and non-null
+    price: number             # string | number | integer | boolean
+```
+
+If any rule is violated the run is marked `failed` with a summary such as `Output validation failed: required field 'date' is missing or empty in 3 of 120 row(s) (first at row 0)`. Nothing is stored in the database and the output file is **not** touched, so the last good export stays in place. A failed validation is retried like any other failure and triggers the failure webhook. Independently of this block, every row must be a dict.
+
 ---
 
 ## 8. Retries and Rate Limiting
@@ -476,6 +490,16 @@ def run(params: Dict[str, Any] = None) -> List[Dict[str, Any]]:
 
 
 ## 10. Troubleshooting
+
+### Seeing what a job is doing
+
+Progress and warnings (rate-limit waits, backoffs, empty results, scraper `logging` calls) are written to **stderr**:
+
+```bash
+siimpli_scrape_it -v run my_job     # -v = debug level
+```
+
+Set `SIIMPLI_LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, ...) to change the level for the CLI, the scheduler, the MCP server and the job processes they start. Your scraper just uses `logging.getLogger(__name__)`.
 
 ### "No jobs found in jobs directory"
 

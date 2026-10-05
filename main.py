@@ -8,12 +8,20 @@ from rich.console import Console
 from rich.table import Table
 
 from core.config import load_config
+from core.logger import configure_logging
 from core.runner import execute_job
 from core.scheduler import ScraperScheduler
 from utils.db import recent_runs
 
 app = typer.Typer(help="siimpli_scrape_it Daemon & CLI Tool")
 console = Console()
+
+
+@app.callback()
+def _root(verbose: bool = typer.Option(False, "--verbose", "-v", help="Debug-level logging")):
+    """siimpli_scrape_it Daemon & CLI Tool"""
+    configure_logging("DEBUG" if verbose else None)
+
 
 def get_all_jobs():
     """Helper to load all valid jobs from jobs directory."""

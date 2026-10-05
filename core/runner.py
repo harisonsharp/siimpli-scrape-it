@@ -7,6 +7,7 @@ import time
 import logging
 from core.exceptions import JobFailedError
 from core.isolation import run_in_subprocess
+from core.validation import format_problems, validate_rows
 from schemas.job_schema import JobConfig
 from utils import db
 from utils.notify import send_webhook
@@ -85,6 +86,11 @@ def execute_job(config: JobConfig, run_id: Optional[int] = None,
             # 6. Validate output
             if not isinstance(data, list):
                 raise ValueError(f"Expected List[Dict] output, got {type(data)}")
+
+            # 6b. Check the rows against the job's expectations before storing anything
+            problems = validate_rows(data, config.validation)
+            if problems:
+                raise JobFailedError(format_problems(problems))
 
             runtime = time.perf_counter() - start_time
             item_count = len(data)

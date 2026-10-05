@@ -7,6 +7,7 @@
 ```bash
 pip install -e ".[dev]"        # install with test deps
 playwright install chromium    # only needed for browser-based scrapers
+siimpli_scrape_it -v <command>         # debug-level logging (or SIIMPLI_LOG_LEVEL=DEBUG)
 pytest                         # run tests (from repo root; tests use relative paths)
 
 siimpli_scrape_it list                 # show configured jobs
@@ -24,6 +25,8 @@ Run everything from the repo root: `main.py` looks for `./jobs` and output paths
 - `main.py` — Typer CLI (`list`, `run`, `status`, `scheduler`). Loads every `jobs/*.yaml` via `core.config.load_config`; invalid YAML is logged and skipped (returns `None`).
 - `schemas/job_schema.py` — Pydantic models: `JobConfig` (`job_name`, `script`, `schedule`, `output`, `retry`, `rate_limit`, `notify`, `parameters`), `OutputConfig` (`csv`|`json` + `path`, optional `key`, `export`), `RetryConfig`, `RateLimitConfig`, `NotifyConfig`.
 - `core/runner.py` — `execute_job(config)`: runs the script's `run(params=config.parameters)` via `_run_script` (child process by default, see `core/isolation.py` / `core/worker.py`), requires a `List[Dict]` return, then `utils.storage.save_data`. Retries up to `retry.retries` attempts (minimum 1) with `retry_delay` seconds between. Returns `True`/`False`; it does not raise. Each call is recorded in `runs` (status `success`/`empty`/`failed`), rows go to the `results` table, and the output file is then exported from them. Run-history DB errors are logged and never fail the job. Optional `notify.webhook_url` gets a POST on failed/empty runs.
+- `core/validation.py` — `validate_rows` / `format_problems`; the runner applies a job's optional `validation` block (`min_rows`, `required_fields`, `types`) right after the list check and **before** anything is stored or exported, raising `JobFailedError` so the last good output survives. Rows must always be dicts.
+- `core/logger.py` — `configure_logging()` (stderr, level from `-v` / `SIIMPLI_LOG_LEVEL`, exported to the env so job worker processes log at the same level). Called by the CLI callback, `core/worker.py` and the MCP server; libraries just use `logging.getLogger(__name__)`.
 - `core/isolation.py` / `core/worker.py` — each attempt runs `python -m core.worker` in a child process (config in, result out via temp JSON files). `timeout_seconds` (default 3600; `None` = unlimited) kills the whole process tree, including Chromium. `isolate: false` in the job runs in-process instead (no timeout; use for debuggers). Child needs importable scripts: the repo root is added to its `PYTHONPATH`; rows must be JSON-serializable (others are stringified).
 - `core/mcp_server.py` — `JobService` (list_jobs, run_job, get_run, get_status, query_results; SDK-independent) wrapped by `create_server()` using the MCP **2.x** SDK (`mcp.server.mcpserver.MCPServer`, not the 1.x `FastMCP`). Read-only except `run_job`, which creates a run row up front, executes in a background thread via `execute_job(config, run_id=..., child_io=...)` and always forces `isolate=True`. Jobs/scrapers are never created or edited through it. `main.py mcp` imports it lazily so the base install works without the SDK.
 - `utils/db.py` — SQLite store (`data/siimpli.db`, override with `SIIMPLI_DB`): `runs` history and `results` rows. `output.key` upserts on those fields; `output.export: all` writes the file from every stored row (default `latest` = this run's rows).
@@ -41,11 +44,11 @@ Conventions the existing code follows: module docstring describing the scraper a
 
 ## Gotchas and known gaps
 
-- `core/logger.py` and `schemas/output_schema.py` are empty stubs; don't rely on them.
+- `schemas/output_schema.py` is an empty stub; don't rely on it.
 - A job's `rate_limit` block is enforced per *domain* and shared across all jobs/processes (reservations in the `rate_hits` / `domain_backoff` tables, see `utils/ratelimit.py`). It covers `get_with_retries`, Playwright main-frame navigations and `FileDownloader`; code using `requests` directly must call `throttle(url)` / `penalize(...)` itself (ScrapMonster does). The limiter lives in a `ContextVar`, which Playwright's sync handlers (separate greenlet) can't see, so `utils/browser.py` captures it at attach time.
 - `captcha_gate` opens a visible (non-headless) browser and can block up to 5 minutes waiting for a human. `docs/user_guide.md` says the runner wires it in automatically; it does not. Scrapers opt in by calling it, and such jobs aren't suitable for unattended scheduler runs.
 - CSV headers are the union of all rows' keys. An empty result writes an empty file and is recorded as status `empty`.
-- With `output.key` set, a row missing a key field fails the run (e.g. scrapers that return `{"status": "error"}` rows instead of raising).
+- With `output.key` set, a row missing a key field fails the run (e.g. scrapers that return `{"status": "error"}` rows instead of raising); the shipped jobs also set `validation.required_fields` so such marker rows fail the run explicitly.
 - Tests get an isolated DB via the autouse fixture in `tests/conftest.py`; for in-process fakes register them in `sys.modules` and set `isolate: False` (`tests/test_run_history.py`); for real subprocess runs write modules to a tmp dir on `PYTHONPATH` (`tests/test_isolation.py`). Either way, don't write into `scrapers/`.
 - Each run row records the executing process's `pid`; `recent_runs`/`get_run` first mark `running` rows whose process is gone as `failed` ("Abandoned: ..."). Rows from before pid tracking (NULL pid) are never reaped.
 - `mcp` extra requires Python >= 3.10 while the package declares >= 3.9; the MCP tests `importorskip("mcp")`.
