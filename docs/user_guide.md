@@ -249,6 +249,36 @@ siimpli_scrape_it scheduler
 
 The scheduler persists job state to `jobs.sqlite` in the project root, so it resumes correctly if restarted.
 
+### MCP Server (for AI agents)
+
+`siimpli_scrape_it mcp` starts a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, so an AI agent (Claude Code, Claude Desktop, ...) can drive the tool directly. It needs the optional dependency (Python 3.10+):
+
+```bash
+pip install -e ".[mcp]"
+```
+
+Register it with your client. The client starts the server from its own working directory, so pass `--project-dir` pointing at the folder that holds `jobs/`:
+
+```bash
+claude mcp add siimpli-scrape-it -- siimpli_scrape_it mcp --project-dir /path/to/siimpli-scrape-it
+```
+
+```json
+{ "mcpServers": { "siimpli-scrape-it": {
+    "command": "siimpli_scrape_it",
+    "args": ["mcp", "--project-dir", "/path/to/siimpli-scrape-it"] } } }
+```
+
+| Tool | What it does |
+|---|---|
+| `list_jobs` | Jobs with schedule, output settings and their last run |
+| `run_job(job_name)` | Starts a job in the background and returns a `run_id` immediately |
+| `get_run(run_id)` | Status of one run — poll until it is no longer `running`; failures include the error |
+| `get_status(job_name?, limit)` | Recent runs, newest first |
+| `query_results(job_name, limit, offset, where)` | Stored rows, paged (max 1000), filtered by exact field values, e.g. `{"commodity": "copper"}` |
+
+What it deliberately **cannot** do: create or edit jobs or scripts, run arbitrary code, or run arbitrary SQL — only jobs already defined in `jobs/` can be started. Runs started through MCP always run isolated with the job's `timeout_seconds`, obey the job's `rate_limit`, and the same job can't be started twice at once by the server. (The scheduler daemon is a separate process and is not coordinated with the MCP server, so avoid starting a job from both at the same moment.)
+
 ---
 
 ## 6. Running the Scheduler Daemon
@@ -286,9 +316,47 @@ Press **Ctrl+C** in the terminal where the scheduler is running. It will perform
 
 - Output is written to the path specified in `output.path` in the job YAML.
 - Parent directories are created automatically if they do not exist.
-- Each run **overwrites** the output file (it does not append).
-- **CSV:** Column headers are derived from the dictionary keys returned by `run()`. All rows must have the same keys.
+- By default each run **overwrites** the output file with that run's rows (`export: latest`).
+- **CSV:** Column headers are the union of the keys across all rows (first-seen order); missing values are blank.
 - **JSON:** A pretty-printed JSON array (UTF-8, 2-space indent).
+
+### Results database and history
+
+Every run also stores its rows in a SQLite database (`data/siimpli.db`, or the path in the `SIIMPLI_DB` environment variable), so history is kept even though the file is overwritten. Two optional `output` settings control this:
+
+```yaml
+output:
+  type: csv
+  path: data/scrap_monster/prices.csv
+  key: [date]      # fields that identify a row; re-scraped rows update in place
+  export: all      # file holds every stored row for the job, not just the last run
+```
+
+- Without `key`, every run's rows are appended to the database as new rows.
+- With `key`, a row whose key already exists is updated and new keys are added. A row missing a key field makes the run fail.
+- `export: all` rebuilds the file from the database after each run.
+
+### Run history
+
+Each execution (including retries) is recorded with its status (`success`, `empty` when 0 rows were returned, or `failed`), duration, attempts, item count and last error:
+
+```bash
+siimpli_scrape_it status              # recent runs, all jobs
+siimpli_scrape_it status my_job -n 30 # one job, last 30 runs
+```
+
+If a run's process dies without finishing (killed, machine restarted), it is marked `failed` with an "Abandoned" error the next time history is read.
+
+### Failure notifications
+
+Add a `notify` block to POST a JSON summary (`job_name`, `status`, `run_id`, `duration_s`, `item_count`, `error`) to a webhook when a run fails or returns nothing:
+
+```yaml
+notify:
+  webhook_url: "https://example.com/hooks/scrape"
+  on_failure: true   # default
+  on_empty: true     # default
+```
 
 ---
 
@@ -306,9 +374,42 @@ retry:
 
 Set `retries: 1` to disable retries (run once and fail immediately).
 
+### Timeouts and isolation
+
+Each attempt runs your script in its own child process. If it runs longer than `timeout_seconds` (default `3600`; `null` for no limit), the process and everything it started (including browser windows) is killed and the attempt counts as failed, so it is retried like any other failure.
+
+```yaml
+timeout_seconds: 900   # per attempt
+isolate: true          # false = run inside the runner's process (no timeout; for debugging)
+```
+
+Because the script runs in a separate process, anything it returns must be JSON-serializable (other values are converted to strings), and anything it prints still appears in your terminal.
+
 ### Rate Limiting
 
-The `rate_limit` block documents your intended rate limit, but enforcement is the responsibility of your scraper script (configure your HTTP session or add `time.sleep()` calls accordingly). Use the `parameters` block to pass these values into your script if needed.
+When a job has a `rate_limit` block, requests are limited **per domain** and the budget is **shared by every job** (and every scheduler worker) that hits the same site:
+
+```yaml
+rate_limit:
+  rate_limit: 10        # max requests per minute to any one domain
+  delay_min: 2          # min/max seconds between requests to the same domain (random)
+  delay_max: 5
+  respect_robots: false # true = refuse URLs that robots.txt disallows
+```
+
+What is covered automatically:
+
+- `utils.http.get_with_retries` — every attempt waits for a slot.
+- Playwright pages from `get_browser_page` / `captcha_gate` — each main-frame page load (not images, scripts, XHR or iframes). The default navigation timeout is raised to 3 minutes so a throttled load doesn't time out.
+- `FileDownloader` — downloads use the shared limiter instead of their own constructor settings.
+
+Time your script already spent sleeping counts towards the gap, so a scraper's own `time.sleep()` doesn't double up.
+
+**Adaptive backoff:** a `429` or `503` response (including from the browser) backs the *whole domain* off for every job, using the `Retry-After` header (default 30 s, capped at 10 minutes).
+
+**robots.txt:** with `respect_robots: true`, a disallowed URL raises `RobotsDisallowed` (HTTP) or is blocked (browser). A missing or unreachable robots.txt means "allowed".
+
+Requests your script makes directly with `requests` or `urllib` are **not** limited — call `utils.ratelimit.throttle(url)` before them (and `penalize(url, response.status_code, response.headers)` after) or use `get_with_retries`. If the results database is unavailable, limiting falls back to per-process.
 
 ---
 
@@ -402,4 +503,4 @@ Run `playwright install chromium` to download the browser binary before using an
 
 ### Scheduler doesn't pick up new jobs
 
-The scheduler reads job files at startup. After adding or modifying a job YAML, restart the scheduler daemon.
+The scheduler reads job files at startup. After adding or modifying a job YAML, restart the scheduler daemon. On restart, edited jobs fully replace their stored versions (schedule and config) and jobs whose YAML was deleted are removed.

@@ -47,6 +47,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from utils.browser import get_browser_page
+from utils.ratelimit import limiter_active, penalize, throttle
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,9 @@ def _build_session() -> requests.Session:
 def _fetch_page_html(session: requests.Session, page_url: str) -> str:
     """Fetch the commodity page HTML via plain HTTP requests."""
     logger.info("Fetching commodity page: %s", page_url)
+    throttle(page_url)
     response = session.get(page_url, timeout=30)
+    penalize(page_url, response.status_code, response.headers)
     response.raise_for_status()
     return response.text
 
@@ -210,7 +213,9 @@ def _legacy_fetch_chart_html(
     }
     payload = {"itemid": itemid, "region": region, "range": "0", "section": section}
     logger.info("Legacy: POSTing to chart API (itemid=%s, section=%s)", itemid, section)
+    throttle(_GETCHART_URL)
     response = session.post(_GETCHART_URL, data=payload, headers=headers, timeout=30)
+    penalize(_GETCHART_URL, response.status_code, response.headers)
     response.raise_for_status()
     return response.text
 
@@ -296,7 +301,7 @@ def run(params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     session = _build_session()
 
     for i, page_url in enumerate(urls):
-        if i > 0:
+        if i > 0 and not limiter_active():  # the job's rate_limit handles spacing otherwise
             delay = random.uniform(delay_min, delay_max)
             logger.debug("Polite delay: %.1fs", delay)
             time.sleep(delay)
@@ -318,8 +323,8 @@ def run(params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
                 logger.info(
                     "No inline chart data found — trying legacy AJAX fallback"
                 )
-                delay = random.uniform(delay_min, delay_max)
-                time.sleep(delay)
+                if not limiter_active():
+                    time.sleep(random.uniform(delay_min, delay_max))
                 ajax_html = _legacy_fetch_chart_html(session, page_url, page_html)
                 if ajax_html:
                     data_points, unit = _parse_chart_data(ajax_html)

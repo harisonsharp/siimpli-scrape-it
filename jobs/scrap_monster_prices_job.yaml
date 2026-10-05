@@ -6,6 +6,8 @@ schedule: "0 3 * * 1"
 output:
   type: csv
   path: data/scrap_monster/prices.csv
+  key: [date]        # one row per date; re-runs update existing dates, new dates accumulate
+  export: all        # CSV holds the full stored history, not just the latest run
 
 retry:
   retries: 3
@@ -29,9 +31,9 @@ parameters:
   url: "https://www.scrapmonster.com/metal-prices/antimony-ingot-9965-min-price/655#"
   #
   # To scrape multiple commodities in one run, switch to the urls list below.
-  # Note: storage.py uses the first row's keys for all CSV rows, so
-  # multi-commodity runs produce one price column per commodity per row.
-  # For clean per-commodity CSVs, run separate jobs with a single url each.
+  # Note: each commodity has its own price_{commodity}_{unit} column, and rows
+  # are keyed by date alone. For clean per-commodity history, run separate
+  # jobs (each with its own output path) with a single url each.
   #
   # urls:
   #   - "https://www.scrapmonster.com/metal-prices/antimony-ingot-9965-min-price/655"

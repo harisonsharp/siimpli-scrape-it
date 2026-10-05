@@ -10,6 +10,9 @@ venv/
 .env
 .env.*
 
+# Scheduler job store
+jobs.sqlite
+
 # Scraped output and debug artifacts
 data/
 debug_*.html

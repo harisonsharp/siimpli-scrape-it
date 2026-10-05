@@ -41,9 +41,9 @@ def _save_csv(data: List[Dict[str, Any]], path: Path) -> None:
         path.write_text("", encoding="utf-8")
         return
         
-    # Assume all dicts have the same keys as the first one
-    keys = data[0].keys()
+    # Union of keys across all rows, in first-seen order; missing values are blank
+    keys = list(dict.fromkeys(k for row in data for k in row))
     with open(path, mode="w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
+        writer = csv.DictWriter(f, fieldnames=keys, restval="")
         writer.writeheader()
         writer.writerows(data)

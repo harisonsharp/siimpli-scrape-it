@@ -98,3 +98,22 @@ def test_scheduler_command(mock_sleep, mock_scheduler_class, mock_load_config, m
     mock_scheduler_instance.start.assert_called_once()
     mock_scheduler_instance.shutdown.assert_called_once()
 
+
+
+def test_status_command_no_runs():
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0
+    assert "No runs recorded" in result.stdout
+
+
+def test_status_command_shows_runs():
+    from utils import db
+    r = db.start_run("status_job")
+    db.finish_run(r, "failed", 2.0, 3, error="kaboom")
+    r2 = db.start_run("other_job")
+    db.finish_run(r2, "success", 1.0, 1, item_count=5)
+
+    result = runner.invoke(app, ["status", "status_job"])
+    assert result.exit_code == 0
+    assert "status_job" in result.stdout and "kaboom" in result.stdout
+    assert "other_job" not in result.stdout

@@ -10,6 +10,7 @@ from rich.table import Table
 from core.config import load_config
 from core.runner import execute_job
 from core.scheduler import ScraperScheduler
+from utils.db import recent_runs
 
 app = typer.Typer(help="siimpli_scrape_it Daemon & CLI Tool")
 console = Console()
@@ -69,6 +70,35 @@ def run_job(job_name: str = typer.Argument(None, help="Name of the job to run"),
     console.print(f"[bold green]Executing {job_name} manually...[/bold green]")
     execute_job(target_job)
 
+@app.command("status")
+def show_status(
+    job_name: str = typer.Argument(None, help="Only show runs for this job"),
+    limit: int = typer.Option(15, "--limit", "-n", help="Number of runs to show"),
+):
+    """Show recent job runs (status, duration, items, errors)."""
+    runs = recent_runs(job_name, limit)
+    if not runs:
+        console.print("[yellow]No runs recorded yet.[/yellow]")
+        return
+
+    colors = {"success": "green", "empty": "yellow", "failed": "red", "running": "blue"}
+    table = Table(title="Recent Runs")
+    for col in ("ID", "Job", "Started (UTC)", "Status", "Secs", "Tries", "Items", "Error"):
+        table.add_column(col)
+    for r in runs:
+        color = colors.get(r["status"], "white")
+        table.add_row(
+            str(r["id"]),
+            r["job_name"],
+            r["started_at"].replace("T", " ").replace("+00:00", ""),
+            f"[{color}]{r['status']}[/{color}]",
+            f"{r['duration_s']:.1f}" if r["duration_s"] is not None else "-",
+            str(r["attempts"]),
+            str(r["item_count"]) if r["item_count"] is not None else "-",
+            (r["error"] or "")[:60],
+        )
+    console.print(table)
+
 @app.command("scheduler")
 def start_scheduler():
     """Start the APScheduler background daemon."""
@@ -82,6 +112,8 @@ def start_scheduler():
     console.print("[yellow]Press Ctrl+C to exit.[/yellow]")
     
     scheduler.start()
+    # Drop persisted jobs whose YAML was deleted (needs the store loaded, so after start)
+    scheduler.remove_stale_jobs(j.job_name for j in jobs)
     
     try:
         # Keep the main thread alive while background scheduler runs
@@ -90,6 +122,21 @@ def start_scheduler():
     except (KeyboardInterrupt, SystemExit):
         console.print("\n[bold red]Shutting down scheduler...[/bold red]")
         scheduler.shutdown()
+
+@app.command("mcp")
+def start_mcp(
+    project_dir: str = typer.Option(
+        None, "--project-dir", "-C",
+        help="Directory containing jobs/ and the data paths (default: current directory)",
+    ),
+):
+    """Start the MCP server (stdio) so an AI agent can list/run jobs and read results."""
+    try:
+        from core.mcp_server import serve
+    except ImportError:
+        console.print("[red]The MCP SDK is not installed. Run: pip install -e \".[mcp]\"[/red]")
+        raise typer.Exit(code=1)
+    serve(project_dir)
 
 if __name__ == "__main__":
     app()

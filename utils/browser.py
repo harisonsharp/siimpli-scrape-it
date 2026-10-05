@@ -1,13 +1,55 @@
 """
 Playwright context managers, including a manual CAPTCHA-gate helper.
 """
+from __future__ import annotations
 
 from contextlib import contextmanager
 from typing import Generator, List
 from playwright.sync_api import sync_playwright, Page, BrowserContext
 import logging
 
+from utils.ratelimit import (
+    RobotsDisallowed, current_limiter, penalize, throttle,
+)
+
 logger = logging.getLogger(__name__)
+
+# Navigations can be held back by the rate limiter (or a 429 backoff) inside the
+# request handler, which counts against Playwright's navigation timeout.
+_THROTTLED_NAVIGATION_TIMEOUT_MS = 180_000
+
+
+def _attach_throttle(context: BrowserContext) -> None:
+    """Route main-frame navigations through the active rate limiter.
+
+    No-op when the running job has no ``rate_limit`` block.  Sub-resources
+    (images, scripts, XHR) and iframes are not counted - only page loads.
+    """
+    # Capture now: Playwright runs the handlers below in its own greenlet, where
+    # the job's context variable is not visible.
+    limiter = current_limiter()
+    if limiter is None:
+        return
+    context.set_default_navigation_timeout(_THROTTLED_NAVIGATION_TIMEOUT_MS)
+
+    def handle(route):
+        request = route.request
+        if request.is_navigation_request() and request.frame.parent_frame is None:
+            try:
+                throttle(request.url, limiter)
+            except RobotsDisallowed as e:
+                logger.warning("Blocking navigation: %s", e)
+                route.abort("blockedbyclient")
+                return
+        route.continue_()
+
+    def on_response(response):
+        request = response.request
+        if request.is_navigation_request() and request.frame.parent_frame is None:
+            penalize(response.url, response.status, response.headers, limiter)
+
+    context.route("**/*", handle)
+    context.on("response", on_response)
 
 @contextmanager
 def get_browser_page(headless: bool = True) -> Generator[Page, None, None]:
@@ -25,6 +67,7 @@ def get_browser_page(headless: bool = True) -> Generator[Page, None, None]:
     try:
         browser = playwright.chromium.launch(headless=headless)
         context = browser.new_context()
+        _attach_throttle(context)
         page = context.new_page()
         yield page
     finally:
@@ -105,6 +148,7 @@ def captcha_gate(
         # Always open visibly so the user can interact
         browser = playwright.chromium.launch(headless=False)
         context: BrowserContext = browser.new_context()
+        _attach_throttle(context)
         page = context.new_page()
 
         logger.info(f"captcha_gate: navigating to {url} (wait_until={wait_until!r})")

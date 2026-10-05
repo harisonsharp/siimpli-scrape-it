@@ -25,6 +25,10 @@ dev = [
     "pytest>=7.4.0",
     "pytest-mock>=3.11.1"
 ]
+# Agent-facing MCP server (`siimpli_scrape_it mcp`); needs Python >= 3.10
+mcp = [
+    "mcp>=2.0.0"
+]
 
 [project.scripts]
 siimpli_scrape_it = "main:app"

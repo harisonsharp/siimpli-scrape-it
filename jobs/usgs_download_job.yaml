@@ -6,6 +6,8 @@ schedule: "0 2 * * 0"
 output:
   type: json
   path: data/usgs/download_manifest.json
+  key: [url]         # latest status per file URL
+  export: all        # manifest covers every file seen, not just the last run
 
 retry:
   retries: 3

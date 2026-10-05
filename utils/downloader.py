@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from utils.ratelimit import limiter_active, penalize, throttle
+
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_EXTENSIONS: frozenset = frozenset({".pdf", ".xlsx", ".xls"})
@@ -111,10 +113,11 @@ class FileDownloader:
             return {"url": url, "status": "skipped", "reason": "already_exists",
                     "path": str(dest_path), "filename": filename, **meta}
 
-        self._polite_wait()
+        self._polite_wait(url)
 
         try:
             response = self._session.get(url, timeout=60, stream=True)
+            penalize(url, response.status_code, response.headers)
             response.raise_for_status()
             dest_path.write_bytes(response.content)
             logger.info("Downloaded %s -> %s", url, dest_path)
@@ -195,14 +198,22 @@ class FileDownloader:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _polite_wait(self) -> None:
+    def _polite_wait(self, url: str) -> None:
         """
         Block until sending the next request respects both the rate cap and
         the per-request jitter delay.
 
+        Inside a job that has a ``rate_limit`` block the shared per-domain
+        limiter decides instead (the constructor's values are then unused).
+        Standalone, this falls back to a local sliding window:
+
         Uses a sliding window: we track the monotonic timestamp of each
         request in a deque and sleep when the window is full.
         """
+        if limiter_active():
+            throttle(url)
+            return
+
         now = time.monotonic()
 
         # Evict entries outside the 60-second window.

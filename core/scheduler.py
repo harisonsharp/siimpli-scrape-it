@@ -66,24 +66,33 @@ class ScraperScheduler:
             raise ValueError(f"Unsupported schedule format: {schedule_str}")
         
     def add_job_from_config(self, config: JobConfig):
-        """Bind a JobConfig to the APScheduler."""
+        """Bind a JobConfig to the APScheduler.
+
+        Always replaces any persisted job with the same id, so edits to the
+        YAML (parameters, output, retries — not just the schedule) take effect.
+        """
         trigger_kwargs = self._parse_schedule(config.schedule)
-        
-        # Check if job already exists
-        if self.scheduler.get_job(config.job_name):
-            logger.info(f"Updating existing job: {config.job_name}")
-            self.scheduler.reschedule_job(
-                config.job_name,
-                trigger='cron',
-                **trigger_kwargs
-            )
-        else:
-            logger.info(f"Adding new job: {config.job_name}")
-            self.scheduler.add_job(
-                execute_job,
-                trigger='cron',
-                args=[config],
-                id=config.job_name,
-                replace_existing=True,
-                **trigger_kwargs
-            )
+        logger.info(f"Adding/updating job: {config.job_name}")
+        self.scheduler.add_job(
+            execute_job,
+            trigger='cron',
+            args=[config],
+            id=config.job_name,
+            replace_existing=True,
+            **trigger_kwargs
+        )
+
+    def remove_stale_jobs(self, active_job_names) -> List[str]:
+        """Remove persisted jobs whose YAML no longer exists.
+
+        Call after ``start()`` so jobs from the persistent store are loaded.
+        Returns the ids that were removed.
+        """
+        active = set(active_job_names)
+        removed = []
+        for job in self.scheduler.get_jobs():
+            if job.id not in active:
+                logger.info(f"Removing stale job: {job.id}")
+                self.scheduler.remove_job(job.id)
+                removed.append(job.id)
+        return removed

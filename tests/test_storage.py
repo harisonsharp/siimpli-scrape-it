@@ -62,3 +62,14 @@ def test_save_data_empty_list():
         
         written_data = json.loads(out_path.read_text(encoding="utf-8"))
         assert written_data == []
+
+
+def test_save_csv_uses_union_of_keys():
+    """Rows with differing keys must not crash or lose columns."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out_path = Path(tmpdir) / "out.csv"
+        config = OutputConfig(type="csv", path=str(out_path))
+        assert save_data([{"a": 1}, {"a": 2, "b": 3}], config) is True
+        with open(out_path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        assert rows == [{"a": "1", "b": ""}, {"a": "2", "b": "3"}]

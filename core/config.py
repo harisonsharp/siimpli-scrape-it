@@ -1,6 +1,7 @@
 """
 Loads YAML into Pydantic models.
 """
+from __future__ import annotations
 import logging
 import yaml
 from pathlib import Path
@@ -39,3 +40,16 @@ def load_config(file_path: str | Path) -> Optional[JobConfig]:
     except Exception as e:
         logger.error(f"Error reading {path}: {e}")
         return None
+
+
+def load_all_jobs(jobs_dir: str | Path = "jobs") -> List[JobConfig]:
+    """Load every valid ``*.yaml`` job in a directory (invalid ones are logged and skipped)."""
+    path = Path(jobs_dir)
+    if not path.exists():
+        return []
+    jobs = []
+    for yaml_file in sorted(path.glob("*.yaml")):
+        config = load_config(yaml_file)
+        if config:
+            jobs.append(config)
+    return jobs
