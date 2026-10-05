@@ -1,0 +1,43 @@
+job_name: usgs_download
+script: scrapers.usgs_downloader
+# Weekly on Sunday at 02:00 — data updates on USGS are infrequent.
+schedule: "0 2 * * 0"
+
+output:
+  type: json
+  path: data/usgs/download_manifest.json
+
+retry:
+  retries: 3
+  retry_delay: 120        # 2 minutes between retries
+
+rate_limit:
+  rate_limit: 10          # runner-level cap (requests per minute)
+  delay_min: 3
+  delay_max: 7
+
+parameters:
+  # ── Output directories ────────────────────────────────────────────────────
+  pdf_dir:   "data/usgs/pdf"
+  xlsx_dir:  "data/usgs/xlsx"
+
+  # ── Politeness / rate limiting (applied inside the scraper) ───────────────
+  rate_limit: 10          # max HTTP requests per 60-second window
+  delay_min:  3.0         # minimum polite delay between requests (seconds)
+  delay_max:  7.0         # maximum polite delay between requests (seconds)
+
+  # ── Download behaviour ────────────────────────────────────────────────────
+  skip_existing: true     # set false to force re-download of all files
+
+  # ── Automated file renaming ───────────────────────────────────────────────
+  # rename: true applies the default scheme: {commodity_slug}_{original_name}
+  # e.g.  mcs2026-aluminum.pdf  →  aluminum_mcs2026-aluminum.pdf
+  rename: true
+
+  # Uncomment and customise rename_template to override the default scheme.
+  # Available variables: {commodity}, {original_stem}, {ext}
+  # rename_template: "{commodity}_{original_stem}{ext}"
+
+  # ── Development / testing ─────────────────────────────────────────────────
+  # Uncomment to limit the crawl to the first N commodity pages only.
+  max_commodities: 32

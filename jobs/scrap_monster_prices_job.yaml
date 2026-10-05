@@ -1,0 +1,38 @@
+job_name: scrap_monster_prices
+script: scrapers.scrap_monster_prices
+# Weekly on Monday at 03:00 — prices update on a rolling monthly basis.
+schedule: "0 3 * * 1"
+
+output:
+  type: csv
+  path: data/scrap_monster/prices.csv
+
+retry:
+  retries: 3
+  retry_delay: 60
+
+rate_limit:
+  rate_limit: 10
+  delay_min: 2
+  delay_max: 5
+
+parameters:
+  delay_min: 2.0
+  delay_max: 5.0
+  headless: false  # set to true (or remove) for normal scheduled runs
+
+  # ── Commodity page URLs ────────────────────────────────────────────────────
+  # Each URL maps to one commodity; the scraper fetches all historical data
+  # and writes rows with columns: date, price_{commodity}_{unit}
+  #
+  # To scrape a single commodity (produces a clean two-column CSV):
+  url: "https://www.scrapmonster.com/metal-prices/antimony-ingot-9965-min-price/655#"
+  #
+  # To scrape multiple commodities in one run, switch to the urls list below.
+  # Note: storage.py uses the first row's keys for all CSV rows, so
+  # multi-commodity runs produce one price column per commodity per row.
+  # For clean per-commodity CSVs, run separate jobs with a single url each.
+  #
+  # urls:
+  #   - "https://www.scrapmonster.com/metal-prices/antimony-ingot-9965-min-price/655"
+  #   - "https://www.scrapmonster.com/metal-prices/base-metals/copper/869"

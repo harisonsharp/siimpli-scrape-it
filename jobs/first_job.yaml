@@ -1,0 +1,16 @@
+job_name: first_job
+script: scrapers.first_scraper
+schedule: "0 3 * * *"
+output:
+  type: csv
+  path: data/first_output.csv
+retry:
+  retries: 3
+  retry_delay: 60
+rate_limit:
+  rate_limit: 10
+  delay_min: 2
+  delay_max: 5
+parameters:
+  region: "us-west"
+  max_pages: 5

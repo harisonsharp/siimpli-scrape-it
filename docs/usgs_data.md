@@ -1,0 +1,4 @@
+Base url (this has a list of all the commodities): https://www.usgs.gov/centers/national-minerals-information-center/commodity-statistics-and-information
+Example metal url (this has links to all the price reports we may want for Aluminum): https://www.usgs.gov/centers/national-minerals-information-center/aluminum-statistics-and-information
+Example metal PDF path (this is the path to an example PDF, but may not be the final path that we use for downloading, we will discuss this more): C:/Users/haris/Downloads/Mineral Commodity Summaries 2026 - mcs2026-aluminum.pdf
+Example metal XLSX path (this is the path to an example XLSX, but may not be the final path that we use for downloading, we will discuss this more): C:/Users/haris/Downloads/mis-202401-alumi.xlsx

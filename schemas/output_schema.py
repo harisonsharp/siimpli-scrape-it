@@ -1,0 +1,3 @@
+"""
+Standardized output formats.
+"""
