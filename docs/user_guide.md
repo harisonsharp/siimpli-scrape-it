@@ -194,6 +194,46 @@ def run(params: Dict[str, Any] = None) -> List[Dict[str, Any]]:
 
 ---
 
+### Declarative scrapers (no Python)
+
+For simple sites you can describe the scrape in YAML instead of writing a module. Set `script: scrapers.declarative` and put the steps under `parameters`:
+
+```yaml
+script: scrapers.declarative
+parameters:
+  vars: {metal: antimony}            # optional scalars usable in templates
+  steps:
+    - fetch: {url: "https://example.com/prices/{metal}", as: page}
+    - extract:
+        from: page
+        rows: "table#prices tr:has(td)"      # CSS selector (HTML) or dotted path (JSON)
+        fields:
+          date:  {select: "td:nth-child(1)"}
+          price: {select: "td:nth-child(2)", type: number}   # string | number | integer
+          link:  {select: "a", attr: href}
+        as: rows
+    - emit: {from: rows, add: {metal: "{metal}"}}
+```
+
+| Step | Purpose |
+|---|---|
+| `fetch` | GET/POST a URL (`params`, `form`, `json`, a few safe `headers`); `parse: auto/html/json/text`; result stored in the variable named by `as` |
+| `extract` | Turn a page into a list of row dicts. Omit `select` on a field to use the row element itself. JSON paths use `.` and `*` (`data.items.*.price`). `regex` keeps the first group |
+| `for_each` | Run nested `steps` for each item of a list (a variable or a literal list); the item is bound to `as` (default `item`) |
+| `emit` | Append rows to the result; `add` merges constant or templated fields |
+
+Templates are `{name}` / `{item.key}` lookups only: there is no expression evaluation. Values that can't be parsed (for example `n/a` for a `number`) become `null`, so give the job a `validation` block (`required_fields`, `types`) to fail the run instead of storing gaps.
+
+Safety rules, always applied (these exist so that agent-written jobs can be trusted to a useful degree):
+
+- **Domain allowlist.** Requests are refused unless the host is listed in `allowed_domains.txt` in the working directory (one domain per line, `#` comments, subdomains included). A missing file blocks everything. `SIIMPLI_ALLOWED_DOMAINS_FILE` points elsewhere.
+- **Public addresses only.** Hosts resolving to loopback, private, link-local or cloud-metadata ranges are refused, and so is every redirect hop that fails the same checks.
+- Ports 80/443 only, no credentials in URLs, responses over 5 MB refused, proxy environment variables ignored.
+- Limits: 100 steps, 3 levels of `for_each`, 1000 loop items, 200 fetches and 100,000 rows per run.
+- Requests go through the job's `rate_limit` block and `respect_robots` like any other scraper.
+
+Known limit: the hostname is resolved once for the check and again when connecting, so DNS rebinding is not fully closed off. Keep the allowlist to domains you trust.
+
 ## 5. CLI Commands
 
 All commands are run from the project root directory.
