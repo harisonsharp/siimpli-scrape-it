@@ -349,3 +349,13 @@ def query_results(
             args + [max(0, limit), max(0, offset)],
         )
         return total, [json.loads(r["data"]) for r in cur.fetchall()]
+
+
+def delete_results(job_name: str) -> int:
+    """Delete every stored row for a job (run history is kept). Returns the number removed.
+
+    Needed when a job's ``output.key`` or output shape changes, since rows stored
+    under the old shape would otherwise be exported alongside the new ones.
+    """
+    with _connect() as conn:
+        return conn.execute("DELETE FROM results WHERE job_name=?", (job_name,)).rowcount

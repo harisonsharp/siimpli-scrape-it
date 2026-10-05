@@ -1,30 +1,41 @@
 """
-ScrapMonster Metal Price Chart Scraper
-=======================================
+ScrapMonster Metal Price Scraper
+================================
 
-Scrapes historical price time-series data from ScrapMonster commodity pages.
+Scrapes the full historical price series for every market ("region") listed on
+a ScrapMonster commodity page, e.g. EXW China, FOB China, Port India, ...
 
-The site now embeds chart data directly in the page as a Google Charts
-``arrayToDataTable(...)`` block, so no secondary AJAX call is required.
+A commodity page shows one chart per region tab, but only the last few points.
+The page's own "All" button loads the complete history with a POST to
+``/metalprice/chartdata`` (itemid, region, range=0, container).  This scraper
+does the same call once per region, so no browser clicking is involved:
 
-Single-phase process per commodity URL:
+  1. GET the commodity page; read the region tabs, each region's unit, and the
+     parameters of its "All" range button (``redrawmetalschart(...)``).
+  2. POST ``chartdata`` with ``range=0`` for each region and parse the
+     ``arrayToDataTable([...])`` block in the response.
 
-  Fetch the page (via requests or a Playwright browser) and parse the
-  ``arrayToDataTable([...])`` block that is rendered into the page HTML.
-  The current price unit is extracted from the ``td.metalltp`` element.
+If a page has no range buttons, the partial history embedded in the page is
+returned instead (region ``default``) and a warning is logged.
 
-Legacy fallback:
+Output is tidy / long: one row per region per date, so one job can hold many
+regions and commodities:
 
-  If no ``arrayToDataTable`` block is found (e.g. older page style), the
-  scraper falls back to the original two-phase AJAX approach: extract
-  ``drawchart(itemid, region, section, range)`` onclick params, then POST
-  to ``/metalprice/getchart``.
+    commodity  — slug from the URL, e.g. ``antimony_ingot_9965_min_price``
+    region     — slug of the tab label, e.g. ``exw_china``
+    unit       — price unit slug, e.g. ``usd_per_mt`` (``unknown`` if absent)
+    date       — ISO date (YYYY-MM-DD)
+    price      — float
 
-Returns rows suitable for CSV storage — one row per data point:
-    date                     — ISO date string (YYYY-MM-DD)
-    price_{commodity}_{unit} — numeric price value
+Suggested job keys: ``output.key: [commodity, region, date]``.
 
-Example output column:  ``price_copper_usd_per_mt``
+Parameters (job YAML ``parameters``):
+    urls / url     commodity page URL(s)                       (required)
+    regions        only these regions: tab labels or region ids (default: all)
+    browser        true = fetch through a visible browser (use if the site
+                   starts blocking plain HTTP; solve the CAPTCHA when asked)
+    delay_min/max  seconds between requests when the job has no ``rate_limit``
+                   block (otherwise the job's per-domain limiter decides)
 
 Usage (via job runner):
     script: scrapers.scrap_monster_prices
@@ -32,7 +43,7 @@ Usage (via job runner):
 Usage (direct):
     python -c "
     from scrapers.scrap_monster_prices import run
-    run({'urls': ['https://www.scrapmonster.com/metal-prices/copper/869']})
+    run({'url': 'https://www.scrapmonster.com/metal-prices/copper/869'})
     "
 """
 
@@ -40,13 +51,14 @@ import logging
 import random
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
-from utils.browser import get_browser_page
+from utils.browser import captcha_gate
 from utils.ratelimit import limiter_active, penalize, throttle
 
 logger = logging.getLogger(__name__)
@@ -55,17 +67,18 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_GETCHART_URL = "https://www.scrapmonster.com/metalprice/getchart"
-_SCRAPMONSTER_ORIGIN = "https://www.scrapmonster.com"
+_ORIGIN = "https://www.scrapmonster.com"
+_CHARTDATA_URL = f"{_ORIGIN}/metalprice/chartdata"
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) "
     "Gecko/20100101 Firefox/148.0"
 )
 
-# Legacy: drawchart('872','146','324','0')  →  itemid, region, section, range
-_DRAWCHART_RE = re.compile(
-    r"drawchart\('(\d+)','(\d+)','(\d+)','(\d+)'\)"
+# The "All" range button of each chart:
+#   redrawmetalschart('5_graphcontainer','0','170','655')  →  container, region, item
+_REDRAW_ALL_RE = re.compile(
+    r"redrawmetalschart\('(\w+)','0','(\d+)','(\d+)'\)"
 )
 
 # Full arrayToDataTable([...]) block — captured group is everything inside []
@@ -92,7 +105,7 @@ def _slugify(text: str) -> str:
 
 def _slugify_unit(unit: str) -> str:
     """
-    Convert a price unit string to a safe column-name slug.
+    Convert a price unit string to a safe slug.
 
     Examples:
         "$US/MT"  →  "usd_per_mt"
@@ -123,239 +136,246 @@ def _commodity_slug_from_url(url: str) -> str:
     return _slugify(slug)
 
 
-def _build_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update({"User-Agent": _USER_AGENT})
-    return session
+@dataclass
+class Region:
+    """One market tab of a commodity page."""
+    label: str
+    region_id: str
+    item_id: str
+    container: str
+    unit: Optional[str]
 
 
-def _fetch_page_html(session: requests.Session, page_url: str) -> str:
-    """Fetch the commodity page HTML via plain HTTP requests."""
-    logger.info("Fetching commodity page: %s", page_url)
-    throttle(page_url)
-    response = session.get(page_url, timeout=30)
-    penalize(page_url, response.status_code, response.headers)
-    response.raise_for_status()
-    return response.text
-
-
-def _fetch_page_html_browser(page_url: str) -> str:
-    """
-    Fetch the fully rendered commodity page HTML via a visible Chromium window.
-
-    Loads the page, clicks the "All" time-range button to request full history,
-    then captures the page HTML after the chart data settles.
-    """
-    logger.info("Opening visible browser for: %s", page_url)
-    with get_browser_page(headless=False) as page:
-        page.goto(page_url, wait_until="load")
-        logger.info("Page loaded, waiting for chart UI to render...")
-
-        # Wait for range buttons to appear (they contain the "All" button).
-        try:
-            page.wait_for_selector("[onclick*='drawchart']", timeout=10_000)
-        except Exception:
-            logger.warning("Timed out waiting for chart range buttons")
-
-        # Click the "All" button to request the full historical data range.
-        clicked = False
-        try:
-            all_btn = page.get_by_role("link", name=re.compile(r"^All$", re.IGNORECASE)).first
-            if all_btn.is_visible():
-                logger.info("Clicking 'All' range button...")
-                all_btn.click()
-                clicked = True
-        except Exception:
-            logger.warning("Could not find 'All' link by role")
-
-        if not clicked:
-            # Fallback: try clicking any button/link with onclick containing range 0
-            try:
-                page.locator("[onclick*=\",'0')\"]").first.click()
-                logger.info("Clicked range button via fallback selector")
-                clicked = True
-            except Exception:
-                logger.warning("Fallback click also failed")
-
-        # Wait for the chart data to update after clicking (if it updated dynamically).
-        page.wait_for_timeout(3000)
-        html = page.content()
-
-    return html
-
-
-def _legacy_fetch_chart_html(
-    session: requests.Session,
-    page_url: str,
-    page_html: str,
-) -> Optional[str]:
-    """
-    Legacy fallback: if the page still uses drawchart() onclick buttons,
-    extract the chart params and POST to the AJAX endpoint.
-
-    Returns the AJAX response HTML, or None if no drawchart() params found.
-    """
-    matches = _DRAWCHART_RE.findall(page_html)
-    if not matches:
-        return None
-
-    itemid, region, section, _ = matches[0]
-    logger.debug(
-        "Legacy chart params — itemid=%s  region=%s  section=%s",
-        itemid, region, section,
-    )
-
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Referer": page_url,
-        "Origin": _SCRAPMONSTER_ORIGIN,
-        "X-Requested-With": "XMLHttpRequest",
-    }
-    payload = {"itemid": itemid, "region": region, "range": "0", "section": section}
-    logger.info("Legacy: POSTing to chart API (itemid=%s, section=%s)", itemid, section)
-    throttle(_GETCHART_URL)
-    response = session.post(_GETCHART_URL, data=payload, headers=headers, timeout=30)
-    penalize(_GETCHART_URL, response.status_code, response.headers)
-    response.raise_for_status()
-    return response.text
-
-
-def _parse_chart_data(html: str) -> Tuple[List[Tuple[str, float]], Optional[str]]:
-    """
-    Parse ``arrayToDataTable(...)`` data points and price unit from HTML.
-
-    Works on both the full commodity page and the legacy AJAX response.
-
-    Returns:
-        data_points — list of (date_str, price_float) tuples
-        unit        — price unit string (e.g. "$US/MT"), or None if not found
-    """
+def _parse_regions(html: str) -> List[Region]:
+    """Find each region's tab label, unit and "All"-range parameters on a commodity page."""
     soup = BeautifulSoup(html, "html.parser")
 
-    datatable_match = _DATATABLE_RE.search(html)
-    if not datatable_match:
-        logger.warning("arrayToDataTable not found in HTML")
-        return [], None
+    labels: Dict[int, str] = {}
+    for a in soup.select('a[href^="#scrappricetabs-"]'):
+        labels[int(a["href"].rsplit("-", 1)[1])] = a.get_text(strip=True)
 
-    table_content = datatable_match.group(1)
-    data_points = [
-        (date, float(price))
-        for date, price in _DATAPOINT_RE.findall(table_content)
-    ]
-    logger.debug("Parsed %d data points", len(data_points))
+    regions: List[Region] = []
+    seen = set()
+    for container, region_id, item_id in _REDRAW_ALL_RE.findall(html):
+        if region_id in seen:
+            continue
+        seen.add(region_id)
+        tab = re.match(r"\d+", container)
+        tab_no = int(tab.group()) if tab else None
+        unit = None
+        pane = soup.find(id=f"scrappricetabs-{tab_no}") if tab_no is not None else None
+        if pane:
+            span = pane.select_one(".scrapitemprice span")
+            unit = span.get_text(strip=True) if span else None
+        regions.append(Region(
+            label=labels.get(tab_no, f"region_{region_id}"),
+            region_id=region_id, item_id=item_id, container=container, unit=unit,
+        ))
+    return regions
 
-    unit: Optional[str] = None
-    price_cell = soup.find("td", class_="metalltp")
-    if price_cell:
-        span = price_cell.find("span")
-        if span:
-            unit = span.get_text(strip=True)
 
-    return data_points, unit
+def _parse_points(html: str) -> List[tuple]:
+    """Parse ``arrayToDataTable`` rows into (date, price) tuples (empty if none)."""
+    match = _DATATABLE_RE.search(html)
+    if not match:
+        return []
+    return [(d, float(p)) for d, p in _DATAPOINT_RE.findall(match.group(1))]
+
+
+def _page_unit(html: str) -> Optional[str]:
+    span = BeautifulSoup(html, "html.parser").select_one(".scrapitemprice span")
+    return span.get_text(strip=True) if span else None
+
+
+def _wants_region(region: Region, wanted: List[str]) -> bool:
+    return not wanted or region.region_id in wanted or _slugify(region.label) in wanted
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Fetching (plain HTTP or a visible browser session)
 # ---------------------------------------------------------------------------
+
+
+class _Pacer:
+    """Polite pause between requests, used only when the job has no rate_limit block."""
+
+    def __init__(self, delay_min: float, delay_max: float):
+        self.delay_min, self.delay_max = delay_min, delay_max
+        self._first = True
+
+    def wait(self) -> None:
+        if limiter_active():
+            return  # the job's per-domain limiter spaces requests (via throttle())
+        if not self._first:
+            delay = random.uniform(self.delay_min, self.delay_max)
+            logger.debug("Polite delay: %.1fs", delay)
+            time.sleep(delay)
+        self._first = False
+
+
+def _post_headers(referer: str) -> Dict[str, str]:
+    return {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Referer": referer,
+        "Origin": _ORIGIN,
+        "X-Requested-With": "XMLHttpRequest",
+    }
+
+
+class _HttpFetcher:
+    def __init__(self, pacer: _Pacer):
+        self.pacer = pacer
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": _USER_AGENT})
+
+    def get(self, url: str) -> str:
+        self.pacer.wait()
+        throttle(url)
+        logger.info("GET %s", url)
+        response = self.session.get(url, timeout=30)
+        penalize(url, response.status_code, response.headers)
+        response.raise_for_status()
+        return response.text
+
+    def post_chart(self, payload: Dict[str, str], referer: str) -> str:
+        self.pacer.wait()
+        throttle(_CHARTDATA_URL)
+        logger.info("POST %s %s", _CHARTDATA_URL, payload)
+        response = self.session.post(
+            _CHARTDATA_URL, data=payload, headers=_post_headers(referer), timeout=30)
+        penalize(_CHARTDATA_URL, response.status_code, response.headers)
+        response.raise_for_status()
+        return response.text
+
+
+class _BrowserFetcher:
+    """Same interface over a Playwright page, sharing its cookies / CAPTCHA clearance."""
+
+    def __init__(self, page, pacer: _Pacer):
+        self.page = page
+        self.pacer = pacer
+
+    def get(self, url: str) -> str:
+        self.pacer.wait()  # navigations are rate limited by the browser context itself
+        logger.info("Browser GET %s", url)
+        self.page.goto(url, wait_until="load")
+        return self.page.content()
+
+    def post_chart(self, payload: Dict[str, str], referer: str) -> str:
+        self.pacer.wait()
+        throttle(_CHARTDATA_URL)  # an API call, not a navigation: throttle explicitly
+        logger.info("Browser POST %s %s", _CHARTDATA_URL, payload)
+        response = self.page.request.post(
+            _CHARTDATA_URL, form=payload, headers=_post_headers(referer))
+        penalize(_CHARTDATA_URL, response.status, response.headers)
+        if not response.ok:
+            raise RuntimeError(f"HTTP {response.status} from {_CHARTDATA_URL}")
+        return response.text()
+
+
+# ---------------------------------------------------------------------------
+# Scraping
+# ---------------------------------------------------------------------------
+
+
+def _scrape_commodity(fetcher, page_url: str, wanted: List[str]) -> List[Dict[str, Any]]:
+    """Return tidy rows for every (wanted) region of one commodity page."""
+    commodity = _commodity_slug_from_url(page_url)
+    html = fetcher.get(page_url)
+    regions = _parse_regions(html)
+
+    if not regions:
+        points = _parse_points(html)
+        if not points:
+            logger.warning("No chart data found for %s", commodity)
+            return [{"status": "no_data", "commodity": commodity, "url": page_url}]
+        logger.warning(
+            "%s: no range buttons found; returning only the page's inline (partial) history",
+            commodity)
+        unit = _page_unit(html)
+        unit_slug = _slugify_unit(unit) if unit else "unknown"
+        return [{"commodity": commodity, "region": "default", "unit": unit_slug,
+                 "date": d, "price": p} for d, p in points]
+
+    selected = [r for r in regions if _wants_region(r, wanted)]
+    if not selected:
+        raise ValueError(
+            f"None of the requested regions {wanted} exist for {commodity}; "
+            f"available: {[_slugify(r.label) for r in regions]}")
+
+    rows: List[Dict[str, Any]] = []
+    for region in selected:
+        slug = _slugify(region.label)
+        chart_html = fetcher.post_chart(
+            {"itemid": region.item_id, "region": region.region_id,
+             "range": "0", "container": region.container},
+            referer=page_url,
+        )
+        points = _parse_points(chart_html)
+        if not points:
+            logger.warning("%s / %s: chart response had no data points", commodity, slug)
+            continue
+        unit_slug = _slugify_unit(region.unit) if region.unit else "unknown"
+        logger.info("%s / %s: %d points (%s)", commodity, slug, len(points), unit_slug)
+        rows.extend({"commodity": commodity, "region": slug, "unit": unit_slug,
+                     "date": d, "price": p} for d, p in points)
+
+    if not rows:
+        return [{"status": "no_data", "commodity": commodity, "url": page_url}]
+    return rows
+
+
+def _use_browser(params: Dict[str, Any]) -> bool:
+    """``browser`` param, with the old ``headless`` flag (headless=False meant a visible browser)."""
+    if "browser" in params:
+        return bool(params["browser"])
+    if "headless" in params:
+        logger.warning("Parameter 'headless' is deprecated; use 'browser: true' for a visible browser")
+        return not params["headless"]
+    return False
 
 
 def run(params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """
-    Scrape historical price chart data from one or more ScrapMonster
-    commodity pages.
+    Scrape full price history for every region of one or more commodity pages.
 
-    Parameters (via job YAML ``parameters`` block):
-
-    ============  ===========  ================================================
-    Key           Default      Description
-    ============  ===========  ================================================
-    urls          required     List of ScrapMonster commodity page URLs.
-    url           —            Single URL shorthand (used if ``urls`` absent).
-    delay_min     2.0          Minimum polite delay between page requests (s).
-    delay_max     5.0          Maximum polite delay between page requests (s).
-    headless      true         Set to false to open a visible Chromium window.
-                               Useful when the page uses heavy JS rendering.
-    ============  ===========  ================================================
-
-    Returns:
-        List[Dict] — one entry per data point, shaped for CSV storage:
-        ``{"date": "YYYY-MM-DD", "price_{commodity}_{unit}": float}``
+    Returns tidy rows ``{commodity, region, unit, date, price}``.  Pages or
+    regions that fail yield marker rows (``{"status": "error" | "no_data", ...}``)
+    which a job's ``validation.required_fields`` will reject.
     """
     params = params or {}
 
-    urls: List[str] = params.get("urls") or (
-        [params["url"]] if "url" in params else []
-    )
+    urls: List[str] = params.get("urls") or ([params["url"]] if "url" in params else [])
     if not urls:
         logger.error("No URLs provided. Set 'urls' or 'url' in parameters.")
         return [{"status": "error", "reason": "no_urls_provided"}]
 
-    delay_min = float(params.get("delay_min", 2.0))
-    delay_max = float(params.get("delay_max", 5.0))
-    headless = bool(params.get("headless", True))
+    wanted = [_slugify(str(r)) if not str(r).isdigit() else str(r)
+              for r in (params.get("regions") or [])]
+    pacer = _Pacer(float(params.get("delay_min", 2.0)), float(params.get("delay_max", 5.0)))
 
-    if not headless:
-        logger.info("Running in visible-browser mode (headless=False)")
-
-    results: List[Dict[str, Any]] = []
-    session = _build_session()
-
-    for i, page_url in enumerate(urls):
-        if i > 0 and not limiter_active():  # the job's rate_limit handles spacing otherwise
-            delay = random.uniform(delay_min, delay_max)
-            logger.debug("Polite delay: %.1fs", delay)
-            time.sleep(delay)
-
-        commodity_slug = _commodity_slug_from_url(page_url)
-        logger.info("Processing commodity: %s (%s)", commodity_slug, page_url)
-
-        try:
-            if headless:
-                page_html = _fetch_page_html(session, page_url)
-            else:
-                page_html = _fetch_page_html_browser(page_url)
-
-            # Primary: parse arrayToDataTable embedded directly in the page.
-            data_points, unit = _parse_chart_data(page_html)
-
-            # Legacy fallback: if data not in page, try the old AJAX endpoint.
-            if not data_points:
-                logger.info(
-                    "No inline chart data found — trying legacy AJAX fallback"
-                )
-                if not limiter_active():
-                    time.sleep(random.uniform(delay_min, delay_max))
-                ajax_html = _legacy_fetch_chart_html(session, page_url, page_html)
-                if ajax_html:
-                    data_points, unit = _parse_chart_data(ajax_html)
-
-            if not data_points:
-                logger.warning("No data points found for %s", commodity_slug)
+    def scrape_all(fetcher) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        for page_url in urls:
+            logger.info("Processing %s", page_url)
+            try:
+                results.extend(_scrape_commodity(fetcher, page_url, wanted))
+            except Exception as exc:
+                logger.error("Failed to scrape %s: %s", page_url, exc)
                 results.append({
-                    "status": "no_data",
-                    "commodity": commodity_slug,
+                    "status": "error",
+                    "commodity": _commodity_slug_from_url(page_url),
                     "url": page_url,
+                    "reason": str(exc),
                 })
-                continue
+        return results
 
-            unit_slug = _slugify_unit(unit) if unit else "price"
-            price_col = f"price_{commodity_slug}_{unit_slug}"
-            logger.info(
-                "  %s: %d points, column=%s, unit=%s",
-                commodity_slug, len(data_points), price_col, unit,
-            )
-
-            for date, price in data_points:
-                results.append({"date": date, price_col: price})
-
-        except Exception as exc:
-            logger.error("Failed to scrape %s: %s", page_url, exc)
-            results.append({
-                "status": "error",
-                "commodity": commodity_slug,
-                "url": page_url,
-                "reason": str(exc),
-            })
+    if _use_browser(params):
+        logger.info("Using a visible browser session")
+        with captcha_gate(urls[0]) as page:
+            results = scrape_all(_BrowserFetcher(page, pacer))
+    else:
+        results = scrape_all(_HttpFetcher(pacer))
 
     logger.info("ScrapMonster scrape complete — %d rows total", len(results))
     return results

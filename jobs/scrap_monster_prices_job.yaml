@@ -6,39 +6,41 @@ schedule: "0 3 * * 1"
 output:
   type: csv
   path: data/scrap_monster/prices.csv
-  key: [date]        # one row per date; re-runs update existing dates, new dates accumulate
+  # Tidy rows: one per commodity, market (region) and date. Re-runs update
+  # existing rows in place and add new dates.
+  key: [commodity, region, date]
   export: all        # CSV holds the full stored history, not just the latest run
 
 validation:
   min_rows: 1
-  required_fields: [date]   # rows without a date are error/no_data markers, not prices
+  # Marker rows ({"status": "error" | "no_data", ...}) lack these fields and fail the run.
+  required_fields: [commodity, region, date, price]
+  types:
+    price: number
 
 retry:
   retries: 3
   retry_delay: 60
 
+# Applies to the page fetch and every chart request (per domain, shared with other jobs).
 rate_limit:
   rate_limit: 10
   delay_min: 2
   delay_max: 5
 
 parameters:
-  delay_min: 2.0
-  delay_max: 5.0
-  headless: false  # set to true (or remove) for normal scheduled runs
-
-  # ── Commodity page URLs ────────────────────────────────────────────────────
-  # Each URL maps to one commodity; the scraper fetches all historical data
-  # and writes rows with columns: date, price_{commodity}_{unit}
-  #
-  # To scrape a single commodity (produces a clean two-column CSV):
-  url: "https://www.scrapmonster.com/metal-prices/antimony-ingot-9965-min-price/655#"
-  #
-  # To scrape multiple commodities in one run, switch to the urls list below.
-  # Note: each commodity has its own price_{commodity}_{unit} column, and rows
-  # are keyed by date alone. For clean per-commodity history, run separate
-  # jobs (each with its own output path) with a single url each.
-  #
-  # urls:
-  #   - "https://www.scrapmonster.com/metal-prices/antimony-ingot-9965-min-price/655"
+  # ── Commodity pages ────────────────────────────────────────────────────────
+  # Each page lists several markets (e.g. EXW China, FOB China, Port India,
+  # Warehouse Rotterdam, Warehouse Baltimore); the scraper returns the full
+  # history of every one of them, tagged with `region` and `unit`.
+  # Units differ between regions (MT, Kg, Lb) — compare within a unit only.
+  urls:
+    - "https://www.scrapmonster.com/metal-prices/antimony-ingot-9965-min-price/655"
   #   - "https://www.scrapmonster.com/metal-prices/base-metals/copper/869"
+
+  # Optional: limit to some markets (tab labels or region ids). Default: all.
+  # regions: ["EXW China", "FOB China"]
+
+  # Plain HTTP works today. If the site starts blocking it, set this to open a
+  # visible browser and solve the CAPTCHA (not suitable for unattended runs).
+  # browser: true

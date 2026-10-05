@@ -73,7 +73,9 @@ def test_config_rejects_unknown_type_and_negative_min_rows():
 
 def test_shipped_job_yamls_load_with_validation():
     jobs = {j.job_name: j for j in load_all_jobs(Path(__file__).parent.parent / "jobs")}
-    assert jobs["scrap_monster_prices"].validation.required_fields == ["date"]
+    assert jobs["scrap_monster_prices"].validation.required_fields == ["commodity", "region", "date", "price"]
+    assert jobs["scrap_monster_prices"].validation.types == {"price": "number"}
+    assert jobs["scrap_monster_prices"].output.key == ["commodity", "region", "date"]
     assert jobs["scrap_monster_prices"].validation.min_rows == 1
     assert jobs["usgs_download"].validation.required_fields == ["url", "status"]
 

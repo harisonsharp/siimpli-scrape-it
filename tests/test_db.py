@@ -113,3 +113,13 @@ def test_old_database_without_pid_column_is_migrated(tmp_path, monkeypatch):
     run = db.start_run("new")
     assert db.get_run(run)["pid"] is not None
     assert [r["job_name"] for r in db.recent_runs()] == ["new", "old"]
+
+
+def test_delete_results_is_scoped_to_one_job_and_keeps_history():
+    db.store_results("a", db.start_run("a"), [{"x": 1}, {"x": 2}], key=["x"])
+    db.store_results("b", db.start_run("b"), [{"x": 1}], key=["x"])
+
+    assert db.delete_results("a") == 2
+    assert db.load_results("a") == [] and len(db.load_results("b")) == 1
+    assert len(db.recent_runs()) == 2                       # run history untouched
+    assert db.delete_results("a") == 0

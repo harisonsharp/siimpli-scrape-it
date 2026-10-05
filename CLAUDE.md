@@ -14,6 +14,7 @@ siimpli_scrape_it list                 # show configured jobs
 siimpli_scrape_it run <job_name>       # run one job now
 siimpli_scrape_it run --all            # run every job in jobs/
 siimpli_scrape_it status [job] [-n N]  # recent run history
+siimpli_scrape_it purge <job> [-y]     # delete a job's stored results (after changing output.key / row shape)
 siimpli_scrape_it scheduler            # start APScheduler daemon (Ctrl+C to stop)
 siimpli_scrape_it mcp -C <project_dir>   # MCP server over stdio (needs: pip install -e ".[mcp]")
 ```
@@ -32,6 +33,7 @@ Run everything from the repo root: `main.py` looks for `./jobs` and output paths
 - `utils/db.py` — SQLite store (`data/siimpli.db`, override with `SIIMPLI_DB`): `runs` history and `results` rows. `output.key` upserts on those fields; `output.export: all` writes the file from every stored row (default `latest` = this run's rows).
 - `core/scheduler.py` — `ScraperScheduler` wraps APScheduler `BackgroundScheduler` with a SQLAlchemy job store (`sqlite:///jobs.sqlite` in the cwd), 4 worker threads, `max_instances=1`. Schedule strings: `hourly`, `daily`, or a 5-field cron expression.
 - `utils/` — `http.get_with_retries` (throttled + 429/503 backoff via `ratelimit` when the job has `rate_limit`), `ratelimit` (per-domain shared limiter, `respect_robots`), `notify.send_webhook`, `browser.get_browser_page` / `captcha_gate` (Playwright), `downloader.FileDownloader` (rate-limited PDF/XLSX downloads), `storage.save_data`.
+- `scrapers/scrap_monster_prices.py` — plain-HTTP scraper: GET the commodity page, read its region tabs (EXW China, FOB China, ...) and each tab's unit, then POST `/metalprice/chartdata` with `range=0` per region for the full history. Emits tidy rows `{commodity, region, unit, date, price}` (job key `[commodity, region, date]`); the old `drawchart`/`getchart` and browser-clicking paths are gone. `browser: true` fetches via a visible `captcha_gate` session instead. Units differ per region (MT/Kg/Lb).
 - `scrapers/` — one module per scraper, each exposing `run(params: dict | None) -> List[Dict[str, Any]]`.
 
 ## Adding a scraper

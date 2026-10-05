@@ -117,3 +117,25 @@ def test_status_command_shows_runs():
     assert result.exit_code == 0
     assert "status_job" in result.stdout and "kaboom" in result.stdout
     assert "other_job" not in result.stdout
+
+
+def test_purge_command_deletes_after_confirmation_and_with_yes():
+    from utils import db
+    db.store_results("purge_job", db.start_run("purge_job"), [{"x": 1}, {"x": 2}], key=["x"])
+
+    declined = runner.invoke(app, ["purge", "purge_job"], input="n\n")
+    assert declined.exit_code != 0 and len(db.load_results("purge_job")) == 2
+
+    confirmed = runner.invoke(app, ["purge", "purge_job"], input="y\n")
+    assert confirmed.exit_code == 0 and "Deleted 2" in confirmed.stdout
+    assert db.load_results("purge_job") == []
+
+    again = runner.invoke(app, ["purge", "purge_job", "--yes"])
+    assert again.exit_code == 0 and "No stored results" in again.stdout
+
+
+def test_purge_with_yes_skips_prompt():
+    from utils import db
+    db.store_results("purge_job2", db.start_run("purge_job2"), [{"x": 1}], key=["x"])
+    result = runner.invoke(app, ["purge", "purge_job2", "-y"])
+    assert result.exit_code == 0 and "Deleted 1" in result.stdout

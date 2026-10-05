@@ -11,7 +11,7 @@ from core.config import load_config
 from core.logger import configure_logging
 from core.runner import execute_job
 from core.scheduler import ScraperScheduler
-from utils.db import recent_runs
+from utils.db import delete_results, query_results, recent_runs
 
 app = typer.Typer(help="siimpli_scrape_it Daemon & CLI Tool")
 console = Console()
@@ -106,6 +106,26 @@ def show_status(
             (r["error"] or "")[:60],
         )
     console.print(table)
+
+@app.command("purge")
+def purge_results(
+    job_name: str = typer.Argument(..., help="Job whose stored results should be deleted"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+):
+    """Delete a job's stored results (run history is kept).
+
+    Use after changing a job's output.key or the shape of its rows, so old rows
+    don't get exported alongside the new ones.
+    """
+    total, _ = query_results(job_name, limit=0)
+    if total == 0:
+        console.print(f"[yellow]No stored results for {job_name}.[/yellow]")
+        return
+    if not yes:
+        typer.confirm(f"Delete {total} stored row(s) for {job_name}?", abort=True)
+    removed = delete_results(job_name)
+    console.print(f"[green]Deleted {removed} stored row(s) for {job_name}.[/green]")
+    console.print("Its output file is rebuilt from the database on the next run.")
 
 @app.command("scheduler")
 def start_scheduler():

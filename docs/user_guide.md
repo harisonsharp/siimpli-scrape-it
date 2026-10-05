@@ -336,6 +336,12 @@ output:
 - With `key`, a row whose key already exists is updated and new keys are added. A row missing a key field makes the run fail.
 - `export: all` rebuilds the file from the database after each run.
 
+If you change a job's `key` (or the shape of its rows), rows stored under the old shape would be exported alongside the new ones. Clear them first — run history is kept:
+
+```bash
+siimpli_scrape_it purge my_job        # asks for confirmation; -y skips it
+```
+
 ### Run history
 
 Each execution (including retries) is recorded with its status (`success`, `empty` when 0 rows were returned, or `failed`), duration, attempts, item count and last error:
