@@ -1,0 +1,4 @@
+# domains agents may fetch
+books.toscrape.com
+quotes.toscrape.com
+www.scrapmonster.com

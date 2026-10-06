@@ -1,0 +1,60 @@
+job_name: scrapmonster_copper_cathode
+script: scrapers.declarative
+schedule: 0 3 * * 1
+output:
+  type: csv
+  path: data/scrap_monster/copper_cathode.csv
+  key:
+  - date
+  export: all
+retry:
+  retries: 2
+  retry_delay: 5
+rate_limit:
+  rate_limit: 10
+  delay_min: 2
+  delay_max: 5
+  respect_robots: true
+validation:
+  min_rows: 50
+  required_fields:
+  - date
+  - price
+  types:
+    price: number
+timeout_seconds: 300
+isolate: true
+parameters:
+  steps:
+  - fetch:
+      url: https://www.scrapmonster.com/metal-prices/copper-cathode-9999-min-price/872
+      as: landing
+  - fetch:
+      url: https://www.scrapmonster.com/metalprice/gethistoricaldata
+      method: POST
+      form:
+        itemid: '872'
+        country: '146'
+        sdate: '2021-01-01'
+        edate: '2099-12-31'
+      parse: html
+      as: history
+  - extract:
+      from: history
+      rows: tr
+      as: rows
+      fields:
+        date:
+          select: td:nth-child(1)
+          attr: text
+          regex: (\d{4}-\d{2}-\d{2})
+        price:
+          select: td:nth-child(2)
+          type: number
+        unit:
+          select: td:nth-child(3)
+  - emit:
+      from: rows
+      add:
+        commodity: copper cathode 99.99% min
+        region: Delivered China

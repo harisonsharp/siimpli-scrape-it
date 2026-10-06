@@ -1,0 +1,63 @@
+job_name: books_catalogue
+script: scrapers.declarative
+schedule: daily
+output:
+  type: csv
+  path: data/books/books.csv
+  key:
+  - title
+  export: all
+retry:
+  retries: 2
+  retry_delay: 5
+rate_limit:
+  rate_limit: 20
+  delay_min: 1
+  delay_max: 2
+  respect_robots: true
+validation:
+  min_rows: 20
+  required_fields:
+  - title
+  - price
+  - url
+  types:
+    price: number
+timeout_seconds: 300
+isolate: true
+parameters:
+  vars:
+    base: https://books.toscrape.com/catalogue
+  steps:
+  - for_each:
+      in:
+      - 1
+      - 2
+      - 3
+      as: page_no
+      steps:
+      - fetch:
+          url: '{base}/page-{page_no}.html'
+          as: page
+      - extract:
+          from: page
+          rows: article.product_pod
+          as: books
+          fields:
+            title:
+              select: h3 a
+              attr: title
+            price:
+              select: p.price_color
+              type: number
+            rating:
+              select: p.star-rating
+              attr: class
+              regex: star-rating (\w+)
+            url:
+              select: h3 a
+              attr: href
+      - emit:
+          from: books
+          add:
+            page: '{page_no}'

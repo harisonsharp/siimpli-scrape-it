@@ -1,0 +1,13 @@
+{
+  "author": "mcp",
+  "created_at": "2026-10-06T01:48:51+00:00",
+  "sha": "2bd2be6d5d5f408ee388daee23d7ba381224a01a9022b80f983a91c370edbbbb",
+  "last_test": {
+    "status": "failed",
+    "run_id": 3,
+    "item_count": null,
+    "error": "StepError: step 1 (foreach): step 1 (fetch): blocked: books.toscrape.com is not on the domain allowlist (allowed_domains.txt); ask the owner to add it",
+    "sha": "2bd2be6d5d5f408ee388daee23d7ba381224a01a9022b80f983a91c370edbbbb",
+    "at": "2026-10-06T01:50:30+00:00"
+  }
+}

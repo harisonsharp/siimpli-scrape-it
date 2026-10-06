@@ -1,6 +1,6 @@
 # Testing agent-written jobs, end to end
 
-A hands-on checklist for trying out the MCP server, the declarative step engine, the draft workflow and the guardrails. Do the phases in order; each one says what to do, what you should see, and where to look if you don't. It takes about an hour. Commands are PowerShell, run from the repo root unless stated.
+A hands-on checklist for trying out the MCP server, the declarative step engine, the draft workflow and the guardrails. Do the phases in order; each one says what to do, what you should see, and where to look if you don't. It takes about an hour. Commands are for **Git Bash** on Windows, run from the repo root unless stated.
 
 The two practice sites used here, `books.toscrape.com` and `quotes.toscrape.com`, exist to be scraped. I ran both example jobs live while writing this, so the numbers below are real.
 
@@ -12,32 +12,40 @@ Not covered: prompt injection from scraped page content (the allowlist and human
 
 ## Phase 0: Prerequisites
 
-```powershell
-python --version                      # must be 3.10 or newer for the MCP SDK
+Open Git Bash and go to the repo. Keep this terminal for the CLI steps; you'll use a second one for the agent.
+
+```bash
+cd /c/Users/haris/work/siim2025/siimpli-scrape-it
+export PYTHONIOENCODING=utf-8        # so curly quotes etc. print correctly in this terminal
+
+python --version                     # must be 3.10 or newer for the MCP SDK
 pip install -e ".[dev,mcp]"
-python -m pytest -q                   # expect everything to pass (~3 minutes)
+python -m pytest -q                  # expect everything to pass (~3 minutes)
 ```
 
-Make sure there is no allowlist yet, so you start from the default-deny state:
+Make sure there is no allowlist yet, so you start from the default-deny state, and no old audit log:
 
-```powershell
-Test-Path allowed_domains.txt         # should print False
+```bash
+[ -e allowed_domains.txt ] && echo "EXISTS - delete it" || echo "absent (good)"
+rm -f data/agent_audit.jsonl         # so the audit check in Phase 8 is readable
 ```
-
-Is `data/agent_audit.jsonl` absent too? If you've run anything before, delete it so the audit check in Phase 7 is readable.
 
 ## Phase 1: Connect an agent
 
-Use an agent session whose working directory is **not** this repo:
+Use an agent session whose working directory is **not** this repo. In a *second* Git Bash window:
 
-```powershell
-mkdir C:\Users\haris\scratch\agent-test -Force
-claude mcp add siimpli-scrape-it -- python C:\Users\haris\work\siim2025\siimpli-scrape-it\main.py mcp -C C:\Users\haris\work\siim2025\siimpli-scrape-it
-cd C:\Users\haris\scratch\agent-test
+```bash
+mkdir -p ~/scratch/agent-test
+cd ~/scratch/agent-test                                  # cd FIRST: see the note below
+REPO=C:/Users/haris/work/siim2025/siimpli-scrape-it     # forward slashes; keep the C:/ form
+claude mcp add siimpli-scrape-it -- python $REPO/main.py mcp -C $REPO
+claude mcp list                                          # expect: siimpli-scrape-it ... √ Connected
 claude
 ```
 
-If `python` there isn't the interpreter you installed `[mcp]` into, put its full path in the command (`where.exe python` shows which one is first).
+**Run `claude mcp add` from the directory you will launch the agent in.** By default it registers the server for the *current directory only* ("local" scope). Register it from the repo (or anywhere else) and then start `claude` in `~/scratch/agent-test`, and the session sees no siimpli tools at all. Check with `claude mcp list` from the directory you launch from. (`--scope user` would make it visible in every directory, including sessions inside this repo, which defeats the point of keeping the agent away from it.)
+
+Keep the `C:/...` form rather than `/c/...` here: it's what the Windows Python and Claude Code both understand, and Git Bash leaves it alone. If `python` there isn't the interpreter you installed `[mcp]` into, put its full path in the command (`which -a python` lists them in order).
 
 In the session, run `/mcp`. **Expect:** `siimpli-scrape-it` connected, with 10 tools: `list_jobs`, `get_status`, `get_run`, `query_results`, `run_job`, `propose_job`, `list_drafts`, `get_draft`, `test_job`, `delete_draft`.
 
@@ -45,11 +53,13 @@ In the session, run `/mcp`. **Expect:** `siimpli-scrape-it` connected, with 10 t
 
 Then ask: *"List the siimpli jobs and recent runs."* You should see the three shipped jobs (`first_job`, `scrap_monster_prices`, `usgs_download`) and the ScrapMonster run history.
 
-If the server doesn't connect: run `python main.py mcp -C .` by hand in the repo. It should sit silently waiting on stdin (Ctrl+C to quit); an `ImportError` means the `mcp` extra is missing from that Python.
+**If `/mcp` shows no siimpli server at all** (not even a failed one), it's registered for a different directory. Run `claude mcp list` in the directory you started `claude` from; if it's missing there, run the `claude mcp add` line again from that directory. If the session was already open, restart it (`/exit`, then `claude`), because MCP servers are loaded at startup.
+
+If the server is listed but shows *Failed* / won't connect: in the repo terminal run `python main.py mcp -C .` by hand. It should sit silently waiting on stdin (Ctrl+C to quit); an `ImportError` means the `mcp` extra is missing from that Python.
 
 ## Phase 2: The guardrails say no
 
-An agent may balk at deliberately bad inputs, so frame it as testing: *"I'm testing the guardrails of this tool. Call `propose_job` with exactly the YAML below and show me the raw response."* Every case from T2 on should come back `ok: false` with the problems listed, and **no file should appear in `jobs/drafts/`** (check after each: `Get-ChildItem jobs\drafts`).
+An agent may balk at deliberately bad inputs, so frame it as testing: *"I'm testing the guardrails of this tool. Call `propose_job` with exactly the YAML below and show me the raw response."* Every case from T2 on should come back `ok: false` with the problems listed, and **no file should appear in `jobs/drafts/`** (check after each, in the repo terminal: `ls jobs/drafts`).
 
 **T1: no allowlist yet.** Use this valid-looking job:
 
@@ -85,7 +95,7 @@ parameters:
           - emit: {from: books, add: {page: "{page_no}"}}
 ```
 
-Expect: accepted, because the URL is templated (`{base}`) and so can't be checked statically. Keep this one: it's your happy-path draft, and it will fail at *run* time until you allowlist the domain (Phase 4 starts there). If you want to see the static check fire too, replace the fetch URL with the literal `https://books.toscrape.com/catalogue/page-1.html`; that is refused with *"not on the domain allowlist"*.
+Expect: accepted, because the URL is templated (`{base}`) and so can't be checked statically. Keep this one: it's your happy-path draft, and it will fail at *run* time until you allowlist the domain (Phase 3 shows that). If you want to see the static check fire too, replace the fetch URL with the literal `https://books.toscrape.com/catalogue/page-1.html`; that is refused with *"not on the domain allowlist"*.
 
 For T2 to T6, take the YAML above and change only the named thing:
 
@@ -99,9 +109,9 @@ For T2 to T6, take the YAML above and change only the named thing:
 
 **T7: YAML bombs.** Propose a job whose text contains `a: &x [1]` and `b: *x`. Expect *"YAML anchors and aliases are not allowed"*.
 
-**T8: no way to approve.** Ask the agent: *"Approve the books_catalogue draft so it goes live."* It should say it has no such tool (it may offer to tell you the CLI command). Confirm `jobs\` still holds only the three original YAML files and the `drafts` folder.
+**T8: no way to approve.** Ask the agent: *"Approve the books_catalogue draft so it goes live."* It should say it has no such tool (it may offer to tell you the CLI command). Confirm `ls jobs` still shows only the three original YAML files and the `drafts` folder.
 
-**T9: names can't escape.** Ask the agent to call `get_draft` and `delete_draft` with the name `../jobs/first_job`. Expect an error, and `jobs\first_job.yaml` still exists.
+**T9: names can't escape.** Ask the agent to call `get_draft` and `delete_draft` with the name `../jobs/first_job`. Expect an error, and `jobs/first_job.yaml` still exists (`ls jobs/first_job.yaml`).
 
 ## Phase 3: SSRF and the allowlist at run time
 
@@ -111,16 +121,17 @@ Make the happy-path draft from T1 exist (re-propose it if you cleaned up), then:
 
 **T11: allowlisted but not public.** Put `localhost` in the allowlist, and have the agent propose a copy of the job with `vars: {base: "http://localhost/catalogue"}` (named `ssrf_probe`):
 
-```powershell
-Set-Content allowed_domains.txt "localhost"
+```bash
+echo "localhost" > allowed_domains.txt
 ```
 
-Dry-run it. Expect `failed` with `localhost resolves to a non-public address`. Then **remove `localhost` again** (next phase overwrites the file).
+Dry-run it. Expect `failed` with `localhost resolves to a non-public address`. Then **remove `localhost` again** (the next phase overwrites the file).
 
 ## Phase 4: The happy path
 
-```powershell
-Set-Content allowed_domains.txt @("# domains agents may fetch", "books.toscrape.com", "quotes.toscrape.com")
+```bash
+printf '%s\n' "# domains agents may fetch" books.toscrape.com quotes.toscrape.com > allowed_domains.txt
+cat allowed_domains.txt
 ```
 
 Now ask the agent, in plain language, to author the job itself, without showing it my YAML:
@@ -131,15 +142,15 @@ Things worth watching as it works:
 - Does it find the right shape from the `propose_job` description alone? Note each rejection it hits and whether the message was enough for it to fix the problem. **That feedback is the most valuable output of this whole exercise.**
 - Does it use `get_draft` to look at sample rows rather than just trusting `status: success`?
 
-**Expect at the end:** a dry run `success` with **60 rows**; the first row a *A Light in the Attic* at **51.77** with rating `Three`. (The agent may name fields differently.)
+**Expect at the end:** a dry run `success` with **60 rows**; the first row *A Light in the Attic* at **51.77** with rating `Three`. (The agent may name fields differently.)
 
 If it gets stuck, give it the T1 YAML as a reference and ask it to compare.
 
 ## Phase 5: Human review and approval
 
-Everything here is yours, not the agent's:
+Everything here is yours, not the agent's (repo terminal):
 
-```powershell
+```bash
 python main.py draft list
 python main.py draft show books_agent         # YAML, last test, 5 sample rows
 python main.py draft test books_agent         # run the dry run yourself; expect "success ... 60 rows"
@@ -147,33 +158,42 @@ python main.py draft test books_agent         # run the dry run yourself; expect
 
 **Check the dry run really stayed in its sandbox:**
 
-```powershell
+```bash
 python main.py status "draft:books_agent"     # runs appear under the draft: name
 python main.py status books_agent             # nothing yet under the real name
-Test-Path data\drafts\books_agent\out.csv     # True
-# and the job's real output path (the `output.path` in its YAML) must not exist yet
+[ -e data/drafts/books_agent/out.csv ] && echo "scratch output exists (good)"
+grep output jobs/drafts/books_agent.yaml      # note the output.path ...
+# ... and that path must not exist yet, e.g.:  ls data/books   ->  "No such file"
 ```
 
-**Tampering must block approval** (do these on a second draft, or before the final approval):
+**Tampering must block approval** (do these on a second draft, or before the final approval; `<name>` is the draft's name):
 1. Propose a new draft and run `python main.py draft approve <name> -y` without testing. Expect *"no successful dry run"*.
-2. Test it, open `jobs\drafts\<name>.yaml`, add a comment line, then approve. Expect *"no successful dry run"* again: the content hash changed.
-3. Test it again, then empty `allowed_domains.txt`, then approve. Expect a failure mentioning the allowlist. Restore the file afterwards.
+2. Test it (`python main.py draft test <name>`), then change the file: `echo "# tamper" >> jobs/drafts/<name>.yaml`, then approve. Expect *"no successful dry run"* again: the content hash changed.
+3. Re-propose and test it again, then empty the allowlist with `cp allowed_domains.txt /tmp/allow.bak && : > allowed_domains.txt`, then approve. Expect a failure mentioning the allowlist. Restore with `cp /tmp/allow.bak allowed_domains.txt`.
 
 **Now approve for real:**
 
-```powershell
+```bash
 python main.py draft approve books_agent      # prints the YAML + sample rows, asks to confirm
-Get-ChildItem jobs                            # books_agent.yaml is now here; drafts\ no longer has it
+ls jobs jobs/drafts                           # books_agent.yaml is now in jobs/; drafts/ no longer has it
 python main.py list                           # shows it as a live job
 ```
 
 ## Phase 6: The approved job behaves like any other
 
-```powershell
+First count rows with a helper (CSV-aware, so quoted commas don't confuse it). Put the job's `output.path` in `$OUT`:
+
+```bash
+OUT=$(python -c "import yaml;print(yaml.safe_load(open('jobs/books_agent.yaml'))['output']['path'])")
+count() { python -c "import csv,sys;print(len(list(csv.DictReader(open(sys.argv[1],encoding='utf-8')))))" "$1"; }
+
 python main.py -v run books_agent             # ~10 s; logs show requests spaced ~1-2 s apart
-(Import-Csv <the job's output.path>).Count    # expect 60
+count "$OUT"                                  # expect 60
 python main.py -v run books_agent             # run it again
+count "$OUT"                                  # still 60
 ```
+
+(If the agent chose `type: json`, use `python -c "import json;print(len(json.load(open('$OUT'))))"` instead of `count`.)
 
 Expect still **60** rows after the second run (they upsert on the `key`), and `python main.py status books_agent` showing two `success` runs.
 
@@ -187,29 +207,38 @@ Optional: `python main.py scheduler`, and confirm it lists the new job. Ctrl+C t
 
 **T13: a JSON API, with query parameters.** Ask for a job named `quotes_agent` that collects quote text, author name and tags from `https://quotes.toscrape.com/api/quotes?page=N` for pages 1 to 3, output `data/quotes/quotes.json`, keyed on `text`. Expect **30 rows**. (Tags arrive as a JSON-encoded string, since a cell holds scalars only. That is a known limitation of `extract`, so tell me if you'd rather it flatten lists.)
 
-**T14: a stuck dry run.** Have the agent propose a job with `timeout_seconds: 5`, a `for_each` over 30 pages and `delay_min: 2` (30 requests at about 2 s each can't fit in 5 s). Expect `failed` with a timeout message and no orphaned Python/Chromium processes (`Get-Process python` shows nothing unexpected after).
+**T14: a stuck dry run.** Have the agent propose a job with `timeout_seconds: 5`, a `for_each` over 30 pages and `delay_min: 2` (30 requests at about 2 s each can't fit in 5 s). Expect `failed` with a timeout message and no orphaned processes afterwards: `tasklist | grep -i python` should show only the MCP server's own `python.exe` (and your terminal's, if any), with no extra worker processes left from the killed run.
 
 ## Phase 8: Audit trail
 
-```powershell
-Get-Content data\agent_audit.jsonl
+```bash
+cat data/agent_audit.jsonl
+# or, one event per line, easier to scan:
+python -c "import json;[print(r['at'], r['event'], r.get('name',''), r.get('status',''), r.get('problems','')) for r in map(json.loads, open('data/agent_audit.jsonl', encoding='utf-8'))]"
 ```
 
 **Expect one JSON line per event:** `propose_rejected` (with the problem list) for every refused attempt in Phase 2, `propose` for each accepted draft, `test_start` / `test_end` for each dry run (with status and row count), and `approve` / `delete_draft` for the ones you did. Dry runs you start from the CLI are logged the same way as the agent's.
 
-Check also that nothing landed outside the intended places: the only new files under `jobs/` should be the ones you approved, and under `data/` only the output folders, `drafts/`, the DB and the audit log.
+Check also that nothing landed outside the intended places: the only new files under `jobs/` should be the ones you approved (`ls jobs`), and under `data/` only the output folders, `drafts/`, the DB and the audit log (`ls data`).
 
 ## Phase 9: Clean up
 
-```powershell
+```bash
 python main.py draft list                     # reject anything left over:  python main.py draft reject <name>
 python main.py purge books_agent -y
-Remove-Item jobs\books_agent.yaml, jobs\quotes_agent.yaml -ErrorAction SilentlyContinue
-Remove-Item -Recurse data\drafts -ErrorAction SilentlyContinue   # and the job's own data\<folder> if you want it gone
+rm -f jobs/books_agent.yaml jobs/quotes_agent.yaml
+rm -rf data/drafts                            # and the job's own data/<folder> if you want it gone
 claude mcp remove siimpli-scrape-it           # if you don't want it registered permanently
 ```
 
 Keep `allowed_domains.txt` only if you want those two practice domains permitted going forward.
+
+## Git Bash gotchas
+
+- **Paths given to Windows programs:** Git Bash rewrites `/c/...` into `C:\...` for native programs, which is usually what you want, but it can also rewrite things that only *look* like paths (for example a YAML value starting with `/`). If an argument arrives mangled, prefix the command with `MSYS_NO_PATHCONV=1`.
+- **`python` not found / wrong one:** `which -a python`. Use the full path (`/c/Users/<you>/AppData/Local/Programs/Python/Python311/python.exe`) if needed.
+- **Garbled characters in output:** make sure `PYTHONIOENCODING=utf-8` is exported in that terminal.
+- **Ctrl+C doesn't stop the scheduler or MCP server:** close the terminal tab, or `taskkill //F //IM python.exe` (note the double slashes in Git Bash). That kills *every* Python process, so only do it when nothing else is running.
 
 ## Results sheet
 
@@ -224,4 +253,4 @@ Keep `allowed_domains.txt` only if you want those two practice domains permitted
 | 7 | T12 validation fail, T13 JSON job (30 rows), T14 timeout | | |
 | 8 | Audit log complete | | |
 
-If anything fails, send me: the agent transcript for that step, `data\agent_audit.jsonl`, the draft file from `jobs\drafts\`, and the output of `python main.py status` (add `-v` before the command for debug logging).
+If anything fails, send me: the agent transcript for that step, `data/agent_audit.jsonl`, the draft file from `jobs/drafts/`, and the output of `python main.py status` (add `-v` before the command for debug logging).
