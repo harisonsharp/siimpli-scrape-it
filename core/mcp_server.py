@@ -2,9 +2,11 @@
 MCP server: lets an agent list jobs, trigger runs, and read run history and
 scraped results.  Start it with ``siimpli_scrape_it mcp``.
 
-Scope is deliberately narrow: the agent can only run jobs that already exist
-as YAML files in ``jobs/`` and read what they stored.  It cannot create or edit
-jobs or scripts, and it cannot run arbitrary code or SQL.
+Scope is deliberately narrow: the agent can run jobs that already exist as YAML
+files in ``jobs/`` and read what they stored.  It may *propose* declarative job
+drafts (``core/drafts.py``) and dry-run them, but it cannot write into ``jobs/``,
+supply code, or approve a draft: approval is a human CLI command that is not
+exposed here.  It cannot run arbitrary code or SQL.
 
 Runs started here are always isolated (child process + ``timeout_seconds``),
 and the child's stdin/stdout are detached from the server's own, because over
@@ -19,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.config import load_all_jobs
+from core.drafts import DraftError, DraftStore
 from core.logger import configure_logging
 from core.runner import execute_job
 from schemas.job_schema import JobConfig
@@ -33,8 +36,36 @@ INSTRUCTIONS = (
     "Tools for the siimpli_scrape_it scraping daemon. list_jobs shows what can be run. "
     "run_job starts a job in the background and returns a run_id immediately; poll "
     "get_run(run_id) until status is success, empty or failed (failed runs carry the "
-    "error). query_results reads the rows a job has stored. get_status lists recent runs."
+    "error). query_results reads the rows a job has stored. get_status lists recent runs. "
+    "To create a new job, call propose_job with declarative YAML (script: scrapers.declarative; "
+    "see the propose_job description). Fix any problems it reports, call test_job and poll "
+    "get_run, inspect sample rows with get_draft, and iterate. A human must approve the draft "
+    "before it becomes a real job; you cannot do that yourself."
 )
+
+PROPOSE_HELP = r'''Propose a new scraper job as YAML. Saved as a draft only: it never runs on a schedule
+and a human must approve it. Returns {ok, problems[]}; fix problems and call again with the same job_name.
+
+Required shape:
+  job_name: lowercase_snake_case
+  script: scrapers.declarative
+  schedule: daily            # hourly | daily | 5-field cron
+  output: {type: csv|json, path: data/<folder>/<file>.csv, key: [fields that identify a row], export: all}
+  validation: {min_rows: 1, required_fields: [..], types: {price: number}}   # required
+  rate_limit: {rate_limit: 10, delay_min: 2, delay_max: 5, respect_robots: true}   # required, max 30/min
+  timeout_seconds: 300       # required, max 900
+  retry: {retries: 2, retry_delay: 30}     # optional, retries max 3
+  parameters:
+    vars: {optional: scalar values usable as {optional} in templates}
+    steps:                   # run in order; no code, no expressions
+      - fetch: {url: "https://host/path/{var}", method: GET|POST, params: {}, form: {}, json: {}, parse: auto|html|json|text, as: page}
+      - extract: {from: page, rows: "css selector (html) or dotted.path.* (json)", as: rows,
+                  fields: {name: {select: "css or path, relative to the row", attr: text|href|<attr>, regex: "(\d+)", type: string|number|integer, value: "literal or {template}"}}}
+      - for_each: {in: rows_or_literal_list, as: item, steps: [..]}      # {item.field} in templates; max 3 levels
+      - emit: {from: rows, add: {extra_field: "{item.x}"}}
+Only domains on the owner's allowlist can be fetched; literal URLs are checked now, templated ones at run time.
+Unparseable numbers become null, which the validation block then rejects, so always set required_fields/types.'''
+
 
 
 class JobService:
@@ -43,6 +74,7 @@ class JobService:
     def __init__(self, jobs_dir: str = "jobs", child_io: Optional[Dict[str, Any]] = None):
         self.jobs_dir = jobs_dir
         self.child_io = child_io
+        self.drafts = DraftStore(jobs_dir, child_io)
         self._running: Dict[str, int] = {}   # job_name -> run_id, for jobs started by this server
         self._lock = threading.Lock()
 
@@ -101,6 +133,30 @@ class JobService:
         return {"started": True, "run_id": run_id, "status": "running",
                 "next": f"call get_run({run_id}) to check progress"}
 
+    # ---- agent-written jobs (drafts only; approval is CLI-only) ----
+
+    def propose_job(self, yaml_text: str) -> Dict[str, Any]:
+        return self.drafts.propose(yaml_text, author="mcp")
+
+    def list_drafts(self) -> List[Dict[str, Any]]:
+        return self.drafts.list()
+
+    def get_draft(self, name: str) -> Dict[str, Any]:
+        return self._draft_call(self.drafts.get, name)
+
+    def test_job(self, name: str) -> Dict[str, Any]:
+        return self._draft_call(self.drafts.start_test, name)
+
+    def delete_draft(self, name: str) -> Dict[str, Any]:
+        return self._draft_call(self.drafts.delete, name)
+
+    @staticmethod
+    def _draft_call(fn, name: str) -> Dict[str, Any]:
+        try:
+            return fn(name)
+        except DraftError as e:
+            raise ValueError(str(e))
+
     def _run(self, config: JobConfig, run_id: int) -> None:
         try:
             execute_job(config, run_id=run_id, child_io=self.child_io)
@@ -148,6 +204,30 @@ def create_server(service: Optional[JobService] = None):
         background and may take minutes); check it with get_run. Hits real websites, subject to
         the job's rate limit and timeout. Returns started=false if this job is already running."""
         return service.run_job(job_name)
+
+    @server.tool(description=PROPOSE_HELP)
+    def propose_job(yaml_text: str) -> Dict[str, Any]:
+        return service.propose_job(yaml_text)
+
+    @server.tool()
+    def list_drafts() -> List[Dict[str, Any]]:
+        """Drafts you (or earlier sessions) proposed, with their last dry-run result."""
+        return service.list_drafts()
+
+    @server.tool()
+    def get_draft(name: str) -> Dict[str, Any]:
+        """A draft's YAML, last dry-run result, whether the current version has passed, and up to 20 sample rows from the last test."""
+        return service.get_draft(name)
+
+    @server.tool()
+    def test_job(name: str) -> Dict[str, Any]:
+        """Dry-run a draft exactly as production would run it (same retries, timeout, rate limit, validation), but writing to a scratch namespace. Returns a run_id immediately; poll get_run, then read get_draft for sample rows."""
+        return service.test_job(name)
+
+    @server.tool()
+    def delete_draft(name: str) -> Dict[str, Any]:
+        """Discard a draft and its dry-run rows."""
+        return service.delete_draft(name)
 
     return server
 

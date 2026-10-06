@@ -234,6 +234,29 @@ Safety rules, always applied (these exist so that agent-written jobs can be trus
 
 Known limit: the hostname is resolved once for the check and again when connecting, so DNS rebinding is not fully closed off. Keep the allowlist to domains you trust.
 
+### Agent-written jobs (drafts)
+
+An AI agent connected over MCP can propose jobs, but only *declarative* ones (see "Declarative scrapers"), so it never supplies code, and it can never put a job into service itself.
+
+1. `propose_job(yaml_text)` validates the YAML and saves it to `jobs/drafts/<name>.yaml`. Drafts are never scheduled and `run --all` ignores them. The agent gets a list of problems back and can retry. Every draft must:
+   - use `script: scrapers.declarative` and a valid step program;
+   - have `validation` (`min_rows >= 1` and `required_fields`), `rate_limit` (max 30/min, `respect_robots: true`) and `timeout_seconds` (max 900);
+   - have no `notify`, no `isolate: false`, retries at most 3;
+   - write to a `.csv`/`.json` file under `data/` that no live job uses;
+   - only fetch domains in `allowed_domains.txt` (literal URLs are checked when proposing; templated ones when running).
+2. `test_job(name)` does a **dry run** through the same runner production uses: same retries, subprocess isolation, timeout, rate limiter, robots check and validation. It differs only in that rows are stored under `draft:<name>` in the database, the file goes to `data/drafts/<name>/`, and no webhook is sent. Each dry run starts from an empty slate. Poll `get_run`, then `get_draft` shows sample rows.
+3. A human reviews and promotes it from the CLI. Approval is not available over MCP:
+
+```bash
+siimpli_scrape_it draft list
+siimpli_scrape_it draft show my_job       # YAML, last test, sample rows
+siimpli_scrape_it draft test my_job       # re-run the dry run yourself
+siimpli_scrape_it draft approve my_job    # needs a passing dry run of this exact version
+siimpli_scrape_it draft reject my_job
+```
+
+Approval is tied to the draft's content hash: editing a draft invalidates its test, and the checks run again at approval time (for example, a domain you have since removed from the allowlist blocks it). The approved job lands in `jobs/<name>.yaml`; restart the scheduler to pick it up. Everything an agent does to drafts is appended to `data/agent_audit.jsonl`.
+
 ## 5. CLI Commands
 
 All commands are run from the project root directory.

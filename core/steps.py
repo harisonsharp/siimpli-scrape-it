@@ -334,24 +334,33 @@ class _Run:
         self.fetches = 0
 
 
+def _text(response) -> str:
+    """Body as text. ``response.text`` would decode charset-less responses as
+    Latin-1 (the HTTP default), mangling UTF-8 pages ("£" -> "Â£"), so only
+    trust the header when it names a charset and otherwise assume UTF-8."""
+    if "charset=" in response.headers.get("Content-Type", "").lower():
+        return response.text
+    return response.content.decode("utf-8", errors="replace")
+
+
 def _parse_body(response, mode: str) -> Any:
     if mode == "auto":
         ctype = response.headers.get("Content-Type", "").lower()
-        text = response.text.lstrip()
         if "json" in ctype:
             mode = "json"
-        elif "html" in ctype or text.startswith("<"):
+        elif "html" in ctype or response.content.lstrip()[:1] == b"<":
             mode = "html"
         else:
             mode = "text"
     if mode == "json":
         try:
-            return jsonlib.loads(response.text)
+            return jsonlib.loads(response.content)
         except ValueError as e:
             raise StepError(f"response is not valid JSON: {e}")
     if mode == "html":
-        return BeautifulSoup(response.text, "lxml")
-    return response.text
+        # raw bytes: BeautifulSoup honours the page's own <meta charset>
+        return BeautifulSoup(response.content, "lxml")
+    return _text(response)
 
 
 def _do_fetch(spec: FetchSpec, scope: Dict[str, Any], run: _Run) -> None:

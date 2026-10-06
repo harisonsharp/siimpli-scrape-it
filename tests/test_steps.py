@@ -115,6 +115,28 @@ def test_for_each_follows_links_and_scopes_variables(site):
     assert rows[1] == {"sku": "SKU-2", "title": "Item 2", "href": "/d/2"}
 
 
+def test_utf8_pages_without_a_declared_charset_are_not_mangled(site):
+    # servers often send "text/html" with no charset; requests would then guess Latin-1
+    site.routes["/u"] = (200, {}, '<p class="price">£12.84</p><p class="name">Café Ünïcode</p>')
+    site.routes["/j"] = (200, {"Content-Type": "application/json"}, {"name": "Café", "price": "£3"})
+    site.routes["/t"] = (200, {"Content-Type": "text/plain"}, "Café £9.50")
+    rows = run_program(program("""
+        steps:
+          - fetch: {{url: "{base}/u", as: h}}
+          - extract: {{from: h, fields: {{price: {{select: .price, type: number}}, name: {{select: .name}}}}, as: a}}
+          - fetch: {{url: "{base}/j", as: j}}
+          - extract: {{from: j, fields: {{name: {{select: name}}, price: {{select: price, type: number}}}}, as: b}}
+          - fetch: {{url: "{base}/t", as: t}}
+          - extract: {{from: t, fields: {{word: {{regex: '^(\S+)'}}, price: {{regex: '£([0-9.]+)', type: number}}}}, as: c}}
+          - emit: {{from: a, add: {{kind: html}}}}
+          - emit: {{from: b, add: {{kind: json}}}}
+          - emit: {{from: c, add: {{kind: text}}}}
+    """, base=site.base))
+    assert rows[0] == {"price": 12.84, "name": "Café Ünïcode", "kind": "html"}
+    assert rows[1] == {"name": "Café", "price": 3, "kind": "json"}
+    assert rows[2] == {"word": "Café", "price": 9.5, "kind": "text"}
+
+
 def test_literal_for_each_list_and_text_regex(site):
     site.routes["/t"] = (200, {"Content-Type": "text/plain"}, "price=42.5 USD")
     rows = run_program(program("""

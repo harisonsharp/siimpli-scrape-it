@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from core.config import load_config
+from core.drafts import DraftError, DraftStore
 from core.logger import configure_logging
 from core.runner import execute_job
 from core.scheduler import ScraperScheduler
@@ -150,6 +151,86 @@ def start_scheduler():
     except (KeyboardInterrupt, SystemExit):
         console.print("\n[bold red]Shutting down scheduler...[/bold red]")
         scheduler.shutdown()
+
+drafts_app = typer.Typer(help="Review agent-written job drafts (jobs/drafts/). Approval is only possible here, never over MCP.")
+app.add_typer(drafts_app, name="draft")
+
+
+def _drafts() -> DraftStore:
+    return DraftStore("jobs")
+
+
+def _guard(fn, *args):
+    try:
+        return fn(*args)
+    except DraftError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+
+
+@drafts_app.command("list")
+def draft_list():
+    """List drafts and the result of their last dry run."""
+    rows = _drafts().list()
+    if not rows:
+        console.print("[yellow]No drafts.[/yellow]")
+        return
+    for d in rows:
+        t = d["last_test"] or {}
+        console.print(f"{d['name']}  author={d['author']}  last test: {t.get('status', 'never run')}"
+                      + (f" ({t['item_count']} rows)" if t.get("item_count") is not None else ""))
+
+
+@drafts_app.command("show")
+def draft_show(name: str = typer.Argument(...)):
+    """Print a draft's YAML, test status and sample rows."""
+    d = _guard(_drafts().get, name)
+    console.print(d["yaml"], markup=False)
+    t = d["last_test"] or {}
+    console.print(f"Last test: {t.get('status', 'never run')}; this exact version passed: {d['tested_current_version']}")
+    if t.get("error"):
+        console.print(f"Error: {t['error']}", markup=False)
+    for row in d["sample"][:5]:
+        console.print(str(row), markup=False)
+
+
+@drafts_app.command("test")
+def draft_test(name: str = typer.Argument(...)):
+    """Dry-run a draft through the production runner (scratch output, no webhook)."""
+    result = _guard(_drafts().run_test, name)
+    color = "green" if result["status"] == "success" else "red"
+    console.print(f"[{color}]{result['status']}[/{color}] run {result['run_id']}, {result['item_count']} rows")
+    if result["error"]:
+        console.print(result["error"], markup=False)
+    raise typer.Exit(code=0 if result["status"] == "success" else 1)
+
+
+@drafts_app.command("approve")
+def draft_approve(
+    name: str = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+):
+    """Promote a draft that passed a dry run into jobs/ (the scheduler picks it up on restart)."""
+    store = _drafts()
+    d = _guard(store.get, name)
+    console.print(d["yaml"], markup=False)
+    if not d["tested_current_version"]:
+        console.print("[red]This exact version has no successful dry run. Run: draft test " + name + "[/red]")
+        raise typer.Exit(code=1)
+    for row in d["sample"][:5]:
+        console.print(str(row), markup=False)
+    if not yes:
+        typer.confirm(f"Approve {name} as a live job?", abort=True)
+    path = _guard(store.approve, name)
+    console.print(f"[green]Approved: {path}[/green] (restart the scheduler to schedule it)")
+
+
+@drafts_app.command("reject")
+def draft_reject(name: str = typer.Argument(...)):
+    """Delete a draft and its dry-run rows."""
+    _guard(_drafts().delete, name)
+    console.print(f"Deleted draft {name}.")
+
 
 @app.command("mcp")
 def start_mcp(

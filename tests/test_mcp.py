@@ -163,7 +163,10 @@ def test_tools_are_exposed_in_process(project):
     async def main():
         async with Client(create_server(JobService(str(project / "jobs")))) as client:
             names = {t.name for t in (await client.list_tools()).tools}
-            assert names == {"list_jobs", "get_status", "get_run", "query_results", "run_job"}
+            assert names == {"list_jobs", "get_status", "get_run", "query_results", "run_job",
+                             "propose_job", "list_drafts", "get_draft", "test_job", "delete_draft"}
+            # an agent must never be able to promote a draft or otherwise write into jobs/
+            assert not any("approve" in n or "promote" in n for n in names)
             jobs = payload(await client.call_tool("list_jobs"))
             assert {j["job_name"] for j in jobs} == {"good_job", "slow_job", "bad_job"}
             err = await client.call_tool("run_job", {"job_name": "nope"})
