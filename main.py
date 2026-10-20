@@ -1,6 +1,7 @@
 """
 Typer CLI entrypoint for siimpli_scrape_it.
 """
+import json
 import typer
 import time
 from pathlib import Path
@@ -12,7 +13,7 @@ from core.drafts import DraftError, DraftStore
 from core.logger import configure_logging
 from core.runner import execute_job
 from core.scheduler import ScraperScheduler
-from utils.db import delete_results, query_results, recent_runs
+from utils.db import delete_results, load_results, query_results, recent_runs
 
 app = typer.Typer(help="siimpli_scrape_it Daemon & CLI Tool")
 console = Console()
@@ -58,26 +59,49 @@ def list_jobs():
 
 @app.command("run")
 def run_job(job_name: str = typer.Argument(None, help="Name of the job to run"), all: bool = typer.Option(False, "--all", help="Run all available jobs")):
-    """Run a specific scraper job or all jobs immediately."""
+    """Run a specific scraper job or all jobs immediately.
+
+    Exits 1 if a job fails, so a caller such as the siimpli monthly jobs can tell.
+    """
     if not job_name and not all:
         console.print("[red]Error: Must specify a job_name or use --all flag[/red]")
         raise typer.Exit(code=1)
-        
+
     jobs = get_all_jobs()
-    
+
     if all:
         console.print(f"[bold green]Running all jobs ({len(jobs)} found)...[/bold green]")
-        for job in jobs:
-            execute_job(job)
+        failed = [job.job_name for job in jobs if not execute_job(job)]
+        if failed:
+            console.print(f"[bold red]Failed: {', '.join(failed)}[/bold red]")
+            raise typer.Exit(code=1)
         return
-        
+
     target_job = next((j for j in jobs if j.job_name == job_name), None)
     if not target_job:
         console.print(f"[bold red]Job {job_name} not found[/bold red]")
         raise typer.Exit(code=1)
-        
+
     console.print(f"[bold green]Executing {job_name} manually...[/bold green]")
-    execute_job(target_job)
+    if not execute_job(target_job):
+        console.print(f"[bold red]{job_name} failed[/bold red] (see: siimpli_scrape_it status {job_name})")
+        raise typer.Exit(code=1)
+
+@app.command("export")
+def export_results(
+    job_name: str = typer.Argument(..., help="Job whose stored results to export"),
+    out: Path = typer.Option(..., "--out", "-o", help="JSON file to write"),
+):
+    """Write every stored row of a job to a JSON file (a list of objects).
+
+    This reads the results database, not the job's output file, so it works the
+    same whatever the job's output type and path are. The siimpli monthly jobs
+    load scraped metal prices this way.
+    """
+    rows = load_results(job_name)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(rows, ensure_ascii=False, default=str), encoding="utf-8")
+    console.print(f"Wrote {len(rows)} row(s) for {job_name} to {out}")
 
 @app.command("status")
 def show_status(

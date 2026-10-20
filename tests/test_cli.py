@@ -139,3 +139,38 @@ def test_purge_with_yes_skips_prompt():
     db.store_results("purge_job2", db.start_run("purge_job2"), [{"x": 1}], key=["x"])
     result = runner.invoke(app, ["purge", "purge_job2", "-y"])
     assert result.exit_code == 0 and "Deleted 1" in result.stdout
+
+
+@patch("main.Path.glob")
+@patch("main.load_config")
+@patch("main.execute_job")
+def test_run_command_exits_1_when_the_job_fails(mock_execute, mock_load_config, mock_glob, mock_job_config):
+    # The siimpli monthly jobs run scrape-it jobs through this command and rely on the exit code.
+    mock_glob.return_value = [MagicMock()]
+    mock_load_config.return_value = mock_job_config
+    mock_execute.return_value = False
+
+    assert runner.invoke(app, ["run", "mock_job"]).exit_code == 1
+    assert runner.invoke(app, ["run", "--all"]).exit_code == 1
+
+
+def test_export_writes_every_stored_row_as_json(tmp_path):
+    import json
+    from utils.db import start_run, store_results
+
+    run_id = start_run("mock_job")
+    store_results("mock_job", run_id, [{"date": "2026-09-01", "price": 1.5}, {"date": "2026-10-01", "price": 2}],
+                  key=["date"])
+    out = tmp_path / "out" / "rows.json"
+
+    result = runner.invoke(app, ["export", "mock_job", "--out", str(out)])
+
+    assert result.exit_code == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == [
+        {"date": "2026-09-01", "price": 1.5}, {"date": "2026-10-01", "price": 2}]
+
+
+def test_export_of_a_job_without_results_writes_an_empty_list(tmp_path):
+    out = tmp_path / "rows.json"
+    assert runner.invoke(app, ["export", "nothing_here", "--out", str(out)]).exit_code == 0
+    assert out.read_text(encoding="utf-8") == "[]"

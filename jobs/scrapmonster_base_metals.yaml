@@ -1,0 +1,43 @@
+job_name: scrapmonster_base_metals
+script: scrapers.scrapmonster_all_metals
+# On siimpli this job is run monthly by the server's
+# jobs/monthly/015_load_scraped_metal_prices.py, which loads its rows into
+# external_metal_price (see CLAUDE.md, "Metal price jobs loaded by siimpli").
+# The schedule below only applies to a local `scheduler`.
+# Weekly on Monday at 03:00, like the other ScrapMonster jobs.
+schedule: "0 3 * * 1"
+
+output:
+  type: csv
+  path: data/scrap_monster/base_metals.csv
+  # One row per commodity item, market and date; re-runs add new dates in place.
+  key: [item_id, region, date]
+  export: all
+
+validation:
+  min_rows: 200
+  # Marker rows ({"status": "error" | "no_data", ...}) lack these and fail the run.
+  required_fields: [group, metal, commodity, item_id, region, date, price]
+  types:
+    price: number
+
+retry:
+  retries: 2
+  retry_delay: 60
+
+rate_limit:
+  rate_limit: 10
+  delay_min: 2
+  delay_max: 5
+  respect_robots: true
+
+# Four metal pages plus their commodity pages and history requests: well under
+# the all-metals crawl, but still allow a couple of hours at the polite rate.
+timeout_seconds: 7200
+isolate: true
+
+parameters:
+  start_url: https://www.scrapmonster.com/metal-prices/base-metals/copper/869
+  groups: [base_metals]
+  metals: [copper, lead, tin, zinc]
+  start_date: "1990-01-01"    # earlier than any data, so the full history comes back

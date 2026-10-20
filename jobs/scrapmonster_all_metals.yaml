@@ -1,0 +1,39 @@
+job_name: scrapmonster_all_metals
+script: scrapers.scrapmonster_all_metals
+# Weekly on Monday at 03:00, like the other ScrapMonster jobs.
+schedule: "0 3 * * 1"
+
+output:
+  type: csv
+  path: data/scrap_monster/all_metals.csv
+  # One row per commodity item, market and date; re-runs add new dates in place.
+  key: [item_id, region, date]
+  export: all
+
+validation:
+  min_rows: 1000
+  # Marker rows ({"status": "error" | "no_data", ...}) lack these and fail the run.
+  required_fields: [group, metal, commodity, item_id, region, date, price]
+  types:
+    price: number
+
+retry:
+  retries: 2
+  retry_delay: 60
+
+rate_limit:
+  rate_limit: 10
+  delay_min: 2
+  delay_max: 5
+  respect_robots: true
+
+# ~60 metal pages and several hundred commodity pages, each with its own history
+# request, at the polite rate above: allow a few hours.
+timeout_seconds: 14400
+isolate: true
+
+parameters:
+  start_url: https://www.scrapmonster.com/metal-prices/base-metals/copper/869
+  # groups: [base_metals, minor_metals, rare_earths]   # default: all three
+  # metals: [copper, antimony]                         # default: every metal
+  start_date: "1990-01-01"    # earlier than any data, so the full history comes back

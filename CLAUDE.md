@@ -11,8 +11,9 @@ siimpli_scrape_it -v <command>         # debug-level logging (or SIIMPLI_LOG_LEV
 pytest                         # run tests (from repo root; tests use relative paths)
 
 siimpli_scrape_it list                 # show configured jobs
-siimpli_scrape_it run <job_name>       # run one job now
-siimpli_scrape_it run --all            # run every job in jobs/
+siimpli_scrape_it run <job_name>       # run one job now (exits 1 if it fails)
+siimpli_scrape_it run --all            # run every job in jobs/ (exits 1 if any fails)
+siimpli_scrape_it export <job> -o F    # every stored row of a job, as a JSON list
 siimpli_scrape_it status [job] [-n N]  # recent run history
 siimpli_scrape_it purge <job> [-y]     # delete a job's stored results (after changing output.key / row shape)
 siimpli_scrape_it scheduler            # start APScheduler daemon (Ctrl+C to stop)
@@ -46,6 +47,12 @@ Run everything from the repo root: `main.py` looks for `./jobs` and output paths
 3. Add a test in `tests/`.
 
 Conventions the existing code follows: module docstring describing the scraper and its `parameters`, `logging.getLogger(__name__)` for logs, type hints, and scraper-specific settings read from `params` with defaults.
+
+## Metal price jobs loaded by siimpli
+
+The siimpli monthly job `siimpli-server/server/siimpli/jobs/monthly/015_load_scraped_metal_prices.py` runs the jobs in its `SCRAPED_SOURCES` list (`scrapmonster_base_metals` today) from a checkout of this repo on siimpli (`/opt/siimpli/scrape-it`, own venv). It runs `python main.py run <job>`, then `python main.py export <job>`, and loads the rows into the analytics DB's `external_metal_price` schema. So `run`'s exit code and `export`'s output are an interface: keep both working. The `schedule` in those YAMLs only matters to a local `scheduler`; on siimpli they run monthly.
+
+Every row such a job stores must have `metal`, `date` (YYYY-MM-DD), `price` (number) and `unit` (`USD/<mass unit>`, e.g. `USD/MT`, `USD/Kg`, `USD/Lb`, `USD/oz`), plus the fields that tell its series apart (ScrapMonster: `commodity`, `region`). Set `validation.required_fields` to all of them. The full rules are in `jobs/common/scraped_prices.py` in siimpli-server. A new site (Westmetall next) needs a job here that follows this, and one `SCRAPED_SOURCES` entry there. Renaming a series field's value (a region label, a commodity slug) creates a new series on the server and leaves the old one stale, so don't reformat them casually.
 
 ## Gotchas and known gaps
 
