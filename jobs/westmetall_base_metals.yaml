@@ -1,0 +1,40 @@
+job_name: westmetall_base_metals
+script: scrapers.westmetall_lme
+# On siimpli this job is run monthly by the server's
+# jobs/monthly/015_load_scraped_metal_prices.py, which loads its rows into
+# external_metal_price (see CLAUDE.md, "Metal price jobs loaded by siimpli").
+# The schedule below only applies to a local `scheduler`.
+# Weekly on Monday at 04:00, an hour after the ScrapMonster jobs.
+schedule: "0 4 * * 1"
+
+output:
+  type: csv
+  path: data/westmetall/base_metals.csv
+  # One row per metal, market (cash or 3-month) and trading day.
+  key: [commodity, market, date]
+  export: all
+
+validation:
+  # Six metals, two markets, about 250 trading days a year since 2008.
+  min_rows: 50000
+  # Marker rows ({"status": "error", ...}) lack these and fail the run.
+  required_fields: [metal, commodity, market, unit, date, price]
+  types:
+    price: number
+
+retry:
+  retries: 2
+  retry_delay: 60
+
+rate_limit:
+  rate_limit: 10
+  delay_min: 2
+  delay_max: 5
+  respect_robots: true
+
+# About 115 pages (one per metal and year) at the polite rate: under 15 minutes.
+timeout_seconds: 1800
+isolate: true
+
+parameters:
+  metals: [copper, tin, lead, zinc, aluminium, nickel]

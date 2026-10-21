@@ -1,0 +1,43 @@
+job_name: ecb_exchange_rates
+script: scrapers.ecb_exchange_rates
+# On siimpli this job is run monthly by the server's
+# jobs/monthly/012_load_ecb_exchange_rates.py, which loads its rows into
+# series_metadata / external_time_series (see CLAUDE.md, "Exchange rates
+# loaded by siimpli"). The schedule below only applies to a local `scheduler`.
+# Weekdays at 17:00, after the ECB publishes at about 16:00 CET.
+schedule: "0 17 * * 1-5"
+
+output:
+  type: csv
+  path: data/ecb/exchange_rates.csv
+  # One row per currency, frequency (daily or monthly average) and date.
+  key: [currency, frequency, date]
+  export: all
+
+validation:
+  # 29 currencies, about 255 rates a year each since 1999, plus the monthly
+  # averages: about 210,000 rows.
+  min_rows: 150000
+  # Marker rows ({"status": "error", ...}) lack these and fail the run.
+  required_fields: [currency, base, frequency, unit, date, rate]
+  types:
+    rate: number
+
+retry:
+  retries: 2
+  retry_delay: 60
+
+rate_limit:
+  rate_limit: 30
+  delay_min: 1
+  delay_max: 2
+  respect_robots: true
+
+# 59 requests of up to 0.5 MB each: a few minutes.
+timeout_seconds: 900
+isolate: true
+
+parameters:
+  currencies: [USD, JPY, CZK, DKK, GBP, HUF, PLN, RON, SEK, CHF, ISK, NOK, TRY, AUD, BRL,
+               CAD, CNY, HKD, IDR, ILS, INR, KRW, MXN, MYR, NZD, PHP, SGD, THB, ZAR]
+  frequencies: [daily, monthly]
