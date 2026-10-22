@@ -1,0 +1,40 @@
+job_name: imf_palladium
+script: scrapers.imf_pcps
+# On siimpli this job is run monthly by the server's
+# jobs/monthly/015_load_scraped_metal_prices.py, which loads its rows into
+# external_metal_price (see CLAUDE.md, "Metal price jobs loaded by siimpli").
+# The schedule below only applies to a local `scheduler`.
+# The IMF updates PCPS in the first week of each month.
+schedule: "0 5 8 * *"
+
+output:
+  type: csv
+  path: data/imf/palladium.csv
+  # One row per metal and month.
+  key: [commodity, market, date]
+  export: all
+
+validation:
+  # Monthly since 1992: about 420 months.
+  min_rows: 400
+  # Marker rows ({"status": "error", ...}) lack these and fail the run.
+  required_fields: [metal, commodity, market, unit, date, price]
+  types:
+    price: number
+
+retry:
+  retries: 2
+  retry_delay: 60
+
+rate_limit:
+  rate_limit: 10
+  delay_min: 1
+  delay_max: 2
+  respect_robots: true
+
+# One small request per metal.
+timeout_seconds: 300
+isolate: true
+
+parameters:
+  metals: [palladium]
